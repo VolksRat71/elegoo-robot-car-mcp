@@ -7,31 +7,57 @@ import { EventEmitter } from "events";
  * Command format: {"H": 1, "N": <cmd>, "D1": <p1>, "D2": <p2>, "D3": <p3>}
  */
 
-// Stock Elegoo command numbers (based on reverse engineering)
-// These may need adjustment based on actual firmware version
+/**
+ * Elegoo Stock Firmware Command Reference (discovered via source code analysis)
+ * Format: {"H":"1","N":<cmd>,"D1":<p1>,"D2":<p2>,"D3":<p3>,"D4":<p4>}\n
+ */
 const CMD = {
-  // Motor commands
-  FORWARD: 1,
-  BACKWARD: 2,
-  LEFT: 3,
-  RIGHT: 4,
-  STOP: 0,
+  // N=1: Motor control - D1=motor(0=all,1=right,2=left), D2=speed(0-250), D3=dir(0=stop,1=fwd,2=back)
+  MOTOR_CONTROL: 1,
 
-  // Servo commands
-  SERVO_HORIZONTAL: 5, // Camera pan servo
-  SERVO_VERTICAL: 6,   // Camera tilt servo (if present)
+  // N=3: Car direction - D1=dir(0=fwd,1=back,2=left,3=right,4-7=diag,8=stop), D2=speed
+  CAR_DIRECTION: 3,
 
-  // Sensor commands
+  // N=4: Motor speed - D1=left_speed, D2=right_speed
+  MOTOR_SPEED: 4,
+
+  // N=5: Servo control - D1=servo(1=pan), D2=angle(0-180) **CONFIRMED WORKING**
+  SERVO: 5,
+
+  // N=8: LED control - D1=led(0=all), D2=R, D3=G, D4=B
+  LED: 8,
+
+  // N=21: Ultrasonic sensor - D1=1
   ULTRASONIC: 21,
+
+  // N=22: Line tracking sensor - D1=1
   LINE_TRACKING: 22,
 
-  // Speed control
-  SET_SPEED: 10,
+  // N=23: Ground check - returns {1_true} or {1_false}
+  GROUND_CHECK: 23,
 
-  // Mode commands
-  LINE_FOLLOW_MODE: 11,
-  OBSTACLE_AVOID_MODE: 12,
-  FOLLOW_MODE: 13,
+  // N=100: Enter standby mode - clear all functions
+  STANDBY: 100,
+};
+
+// Direction values for N=3 (CAR_DIRECTION)
+const DIR = {
+  FORWARD: 0,
+  BACKWARD: 1,
+  LEFT: 2,
+  RIGHT: 3,
+  FORWARD_LEFT: 4,
+  FORWARD_RIGHT: 5,
+  BACKWARD_LEFT: 6,
+  BACKWARD_RIGHT: 7,
+  STOP: 8,
+};
+
+// Motor direction values for N=1 (MOTOR_CONTROL)
+const MOTOR_DIR = {
+  STOP: 0,
+  FORWARD: 1,
+  BACKWARD: 2,
 };
 
 export interface RobotResponse {
@@ -138,12 +164,18 @@ export class StockRobotClient extends EventEmitter {
     }, 5000);
   }
 
-  private sendCommand(n: number, d1: number = 0, d2: number = 0, d3: number = 0): void {
+  private sendCommand(n: number, d1: number = 0, d2: number = 0, d3: number = 0, d4: number = 0): void {
     if (!this.socket || !this.status.connected) {
       throw new Error("Not connected to robot");
     }
 
-    const cmd = { H: 1, N: n, D1: d1, D2: d2, D3: d3 };
+    // H must be string "1" per Elegoo protocol
+    const cmd: Record<string, string | number> = { H: "1", N: n };
+    if (d1 !== 0) cmd.D1 = d1;
+    if (d2 !== 0) cmd.D2 = d2;
+    if (d3 !== 0) cmd.D3 = d3;
+    if (d4 !== 0) cmd.D4 = d4;
+
     const message = JSON.stringify(cmd) + "\n";
     this.socket.write(message);
     console.error(`Sent: ${message.trim()}`);
@@ -155,33 +187,34 @@ export class StockRobotClient extends EventEmitter {
     speed: number = 50,
     duration?: number
   ): Promise<RobotResponse> {
-    // Convert 0-100 speed to 0-255
-    const mappedSpeed = Math.round((speed / 100) * 255);
+    // Convert 0-100 speed to 0-250 (Elegoo max)
+    const mappedSpeed = Math.round((speed / 100) * 250);
     this.currentSpeed = mappedSpeed;
 
+    // Map direction to D1 value for N=3 (CAR_DIRECTION)
     const dirMap: Record<string, number> = {
-      forward: CMD.FORWARD,
-      backward: CMD.BACKWARD,
-      left: CMD.LEFT,
-      right: CMD.RIGHT,
-      stop: CMD.STOP,
+      forward: DIR.FORWARD,
+      backward: DIR.BACKWARD,
+      left: DIR.LEFT,
+      right: DIR.RIGHT,
+      stop: DIR.STOP,
     };
 
     try {
-      // Set speed first
-      this.sendCommand(CMD.SET_SPEED, mappedSpeed, mappedSpeed, mappedSpeed);
+      // Enter standby first to clear any autonomous modes
+      this.sendCommand(CMD.STANDBY);
 
-      // Then send direction
-      this.sendCommand(dirMap[direction]);
+      // Use N=3 (CAR_DIRECTION) with D1=direction, D2=speed
+      this.sendCommand(CMD.CAR_DIRECTION, dirMap[direction], mappedSpeed);
 
       // If duration specified, stop after delay
       if (duration && direction !== "stop") {
         setTimeout(() => {
-          this.sendCommand(CMD.STOP);
+          this.sendCommand(CMD.CAR_DIRECTION, DIR.STOP, 0);
         }, duration);
       }
 
-      return { success: true, cmd: "drive", data: { direction, speed } };
+      return { success: true, cmd: "drive", data: { direction, speed, mappedSpeed } };
     } catch (error) {
       return {
         success: false,
@@ -192,26 +225,25 @@ export class StockRobotClient extends EventEmitter {
   }
 
   async turn(degrees: number, speed: number = 50): Promise<RobotResponse> {
-    const mappedSpeed = Math.round((speed / 100) * 255);
+    const mappedSpeed = Math.round((speed / 100) * 250);
 
     // Estimate duration based on degrees (rough approximation)
     const duration = Math.abs(degrees) * 10; // ~10ms per degree at full speed
 
     try {
-      this.sendCommand(CMD.SET_SPEED, mappedSpeed, mappedSpeed, mappedSpeed);
+      // Enter standby first
+      this.sendCommand(CMD.STANDBY);
 
-      if (degrees > 0) {
-        this.sendCommand(CMD.RIGHT);
-      } else {
-        this.sendCommand(CMD.LEFT);
-      }
+      // Use N=3 with left/right direction
+      const direction = degrees > 0 ? DIR.RIGHT : DIR.LEFT;
+      this.sendCommand(CMD.CAR_DIRECTION, direction, mappedSpeed);
 
       // Stop after estimated turn duration
       setTimeout(() => {
-        this.sendCommand(CMD.STOP);
+        this.sendCommand(CMD.CAR_DIRECTION, DIR.STOP, 0);
       }, duration);
 
-      return { success: true, cmd: "turn", data: { degrees, speed } };
+      return { success: true, cmd: "turn", data: { degrees, speed, mappedSpeed } };
     } catch (error) {
       return {
         success: false,
@@ -223,7 +255,10 @@ export class StockRobotClient extends EventEmitter {
 
   async emergencyStop(): Promise<RobotResponse> {
     try {
-      this.sendCommand(CMD.STOP);
+      // Send stop command immediately
+      this.sendCommand(CMD.CAR_DIRECTION, DIR.STOP, 0);
+      // Also enter standby to halt any autonomous modes
+      this.sendCommand(CMD.STANDBY);
       return { success: true, cmd: "emergency_stop" };
     } catch (error) {
       return {
@@ -239,8 +274,9 @@ export class StockRobotClient extends EventEmitter {
     const clampedAngle = Math.max(0, Math.min(180, angle));
 
     try {
-      // D1=1 for horizontal servo, D2=angle
-      this.sendCommand(CMD.SERVO_HORIZONTAL, 1, clampedAngle);
+      // N=5: Servo control - D1=servo(1=pan), D2=angle
+      // **CONFIRMED WORKING** in testing
+      this.sendCommand(CMD.SERVO, 1, clampedAngle);
       return { success: true, cmd: "look", data: { angle: clampedAngle } };
     } catch (error) {
       return {
@@ -252,15 +288,14 @@ export class StockRobotClient extends EventEmitter {
   }
 
   async getDistance(): Promise<RobotResponse> {
-    // Stock firmware may not support sensor queries via TCP
-    // This would need the ESP32 to relay from Arduino
     try {
-      this.sendCommand(CMD.ULTRASONIC);
-      // Response would come async via the message event
+      // N=21: Ultrasonic sensor - D1=1
+      this.sendCommand(CMD.ULTRASONIC, 1);
+      // Response comes async via the message event
       return {
         success: true,
         cmd: "get_distance",
-        data: { distance: -1, note: "Async response - check message events" }
+        data: { note: "Response arrives asynchronously - listen for 'message' event" }
       };
     } catch (error) {
       return {
@@ -273,16 +308,31 @@ export class StockRobotClient extends EventEmitter {
 
   async getLineSensors(): Promise<RobotResponse> {
     try {
-      this.sendCommand(CMD.LINE_TRACKING);
+      // N=22: Line tracking sensor - D1=1
+      this.sendCommand(CMD.LINE_TRACKING, 1);
       return {
         success: true,
         cmd: "get_line_sensors",
-        data: { note: "Async response - check message events" }
+        data: { note: "Response arrives asynchronously - listen for 'message' event" }
       };
     } catch (error) {
       return {
         success: false,
         cmd: "get_line_sensors",
+        error: error instanceof Error ? error.message : "Unknown error",
+      };
+    }
+  }
+
+  async setLed(r: number, g: number, b: number, led: number = 0): Promise<RobotResponse> {
+    try {
+      // N=8: LED control - D1=led(0=all), D2=R, D3=G, D4=B
+      this.sendCommand(CMD.LED, led, r, g, b);
+      return { success: true, cmd: "set_led", data: { r, g, b, led } };
+    } catch (error) {
+      return {
+        success: false,
+        cmd: "set_led",
         error: error instanceof Error ? error.message : "Unknown error",
       };
     }
@@ -303,40 +353,83 @@ export class StockRobotClient extends EventEmitter {
     endAngle = 180,
     step = 10
   ): Promise<RobotResponse> {
-    // Not directly supported by stock firmware
-    return {
-      success: false,
-      cmd: "scan",
-      error: "Scan not supported by stock firmware - use custom firmware",
-    };
+    // Implement scan by panning servo and reading ultrasonic at each step
+    // This is a software-level implementation using basic commands
+    try {
+      const readings: Array<{ angle: number; distance?: number }> = [];
+
+      for (let angle = startAngle; angle <= endAngle; angle += step) {
+        // Pan to angle
+        this.sendCommand(CMD.SERVO, 1, angle);
+        // Wait for servo to move
+        await new Promise(resolve => setTimeout(resolve, 200));
+        // Request distance reading (async response)
+        this.sendCommand(CMD.ULTRASONIC, 1);
+        readings.push({ angle });
+        await new Promise(resolve => setTimeout(resolve, 100));
+      }
+
+      // Return to center
+      this.sendCommand(CMD.SERVO, 1, 90);
+
+      return {
+        success: true,
+        cmd: "scan",
+        data: {
+          readings,
+          note: "Distance values arrive asynchronously - check 'message' events"
+        },
+      };
+    } catch (error) {
+      return {
+        success: false,
+        cmd: "scan",
+        error: error instanceof Error ? error.message : "Unknown error",
+      };
+    }
   }
 
   async getStatus(): Promise<RobotResponse> {
-    return {
-      success: true,
-      cmd: "status",
-      data: {
-        connected: this.status.connected,
-        mode: "stock",
-        note: "Limited status available with stock firmware",
-      },
-    };
+    try {
+      // Request ground check status
+      this.sendCommand(CMD.GROUND_CHECK);
+      return {
+        success: true,
+        cmd: "status",
+        data: {
+          connected: this.status.connected,
+          mode: "stock",
+          note: "Ground check response arrives asynchronously",
+        },
+      };
+    } catch (error) {
+      return {
+        success: true,
+        cmd: "status",
+        data: {
+          connected: this.status.connected,
+          mode: "stock",
+        },
+      };
+    }
   }
 
   async setMode(
     mode: "manual" | "explore" | "line_follow" | "obstacle_avoid"
   ): Promise<RobotResponse> {
-    const modeMap: Record<string, number> = {
-      line_follow: CMD.LINE_FOLLOW_MODE,
-      obstacle_avoid: CMD.OBSTACLE_AVOID_MODE,
-      manual: CMD.STOP, // Stop any autonomous mode
-    };
-
     try {
-      if (modeMap[mode]) {
-        this.sendCommand(modeMap[mode]);
-      }
-      return { success: true, cmd: "set_mode", data: { mode } };
+      // For stock firmware, we just enter standby for manual mode
+      // Other modes would require specific autonomous mode commands
+      // which aren't well-documented in the stock protocol
+      this.sendCommand(CMD.STANDBY);
+      return {
+        success: true,
+        cmd: "set_mode",
+        data: {
+          mode,
+          note: mode === "manual" ? "Entered standby mode" : "Autonomous modes not fully supported with stock firmware"
+        }
+      };
     } catch (error) {
       return {
         success: false,

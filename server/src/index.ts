@@ -190,13 +190,14 @@ function zodFieldToJsonSchema(field: z.ZodTypeAny): Record<string, unknown> {
 
 // Initialize and run
 async function main() {
-  const robotUrl = process.env.ROBOT_URL || "ws://192.168.4.1:8080";
+  const robotHost = process.env.ROBOT_HOST || "192.168.4.1";
+  const robotPort = parseInt(process.env.ROBOT_PORT || "100");
 
   console.error(`Elegoo Robot Car MCP Server starting...`);
-  console.error(`Robot URL: ${robotUrl}`);
+  console.error(`Robot: ${robotHost}:${robotPort} (stock Elegoo firmware)`);
 
-  // Initialize robot client (connection happens lazily)
-  const robot = getRobotClient(robotUrl);
+  // Initialize robot client for stock Elegoo firmware (TCP port 100)
+  const robot = getRobotClient(robotHost, robotPort);
 
   // Initialize map store
   getMapStore();
@@ -207,8 +208,9 @@ async function main() {
     console.error("Connected to robot!");
   } catch (error) {
     console.error(
-      `Warning: Could not connect to robot at ${robotUrl}. Tools will attempt to reconnect when used.`
+      `Warning: Could not connect to robot at ${robotHost}:${robotPort}. Tools will attempt to reconnect when used.`
     );
+    console.error("Make sure you're connected to the ELEGOO WiFi network and the robot is powered on.");
   }
 
   // Set up event handlers
