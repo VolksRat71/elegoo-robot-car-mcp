@@ -6,6 +6,7 @@ import { SSEServerTransport } from "@modelcontextprotocol/sdk/server/sse.js";
 import {
   CallToolRequestSchema,
   ListToolsRequestSchema,
+  CompleteRequestSchema,
 } from "@modelcontextprotocol/sdk/types.js";
 import { z } from "zod";
 import { createServer } from "http";
@@ -41,6 +42,7 @@ const server = new Server(
   {
     capabilities: {
       tools: {},
+      completions: {},
     },
   }
 );
@@ -54,6 +56,11 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
   }));
 
   return { tools };
+});
+
+// Handle completions (required by reloaderoo proxy)
+server.setRequestHandler(CompleteRequestSchema, async () => {
+  return { completion: { values: [] } };
 });
 
 // Handle tool calls

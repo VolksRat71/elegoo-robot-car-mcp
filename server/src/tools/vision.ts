@@ -1,6 +1,11 @@
 import { z } from "zod";
 import { getRobotClient } from "../robot-client.js";
 
+// Camera endpoint on stock Elegoo firmware
+const CAMERA_HOST = process.env.CAMERA_HOST || "192.168.4.1";
+const CAMERA_PORT = process.env.CAMERA_PORT || "80";
+const CAMERA_URL = `http://${CAMERA_HOST}:${CAMERA_PORT}`;
+
 export const lookSchema = z.object({
   angle: z
     .number()
@@ -12,44 +17,64 @@ export const lookSchema = z.object({
 export async function captureImage(): Promise<{
   content: Array<{ type: "text"; text: string } | { type: "image"; data: string; mimeType: string }>;
 }> {
-  const robot = getRobotClient();
-
   try {
-    const response = await robot.captureImage();
+    // Try common Elegoo camera endpoints
+    const endpoints = [
+      `${CAMERA_URL}/capture`,
+      `${CAMERA_URL}/jpg`,
+      `${CAMERA_URL}/cam-hi.jpg`,
+      `${CAMERA_URL}/cam-lo.jpg`,
+    ];
 
-    if (!response.success) {
+    let imageBuffer: Buffer | null = null;
+    let usedEndpoint = "";
+
+    for (const endpoint of endpoints) {
+      try {
+        const controller = new AbortController();
+        const timeout = setTimeout(() => controller.abort(), 5000);
+
+        const response = await fetch(endpoint, {
+          signal: controller.signal,
+        });
+        clearTimeout(timeout);
+
+        if (response.ok) {
+          const contentType = response.headers.get("content-type") || "";
+          if (contentType.includes("image")) {
+            imageBuffer = Buffer.from(await response.arrayBuffer());
+            usedEndpoint = endpoint;
+            break;
+          }
+        }
+      } catch {
+        // Try next endpoint
+        continue;
+      }
+    }
+
+    if (!imageBuffer) {
       return {
         content: [
           {
             type: "text",
-            text: `Failed to capture image: ${response.error || "Unknown error"}`,
+            text: `Failed to capture image. Tried endpoints: ${endpoints.join(", ")}. Make sure you're connected to ELEGOO WiFi and camera is enabled.`,
           },
         ],
       };
     }
 
-    const imageData = response.data as { image: string; width?: number; height?: number };
-
-    if (!imageData?.image) {
-      return {
-        content: [
-          {
-            type: "text",
-            text: "No image data received from robot camera.",
-          },
-        ],
-      };
-    }
+    const base64Image = imageBuffer.toString("base64");
 
     return {
       content: [
         {
           type: "text",
-          text: `Image captured successfully${imageData.width ? ` (${imageData.width}x${imageData.height})` : ""}.`,
+          text: `Image captured from ${usedEndpoint} (${imageBuffer.length} bytes).`,
         },
         {
           type: "image",
-          data: imageData.image,
+          data: base64Image,
           mimeType: "image/jpeg",
         },
       ],
