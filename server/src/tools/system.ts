@@ -111,6 +111,28 @@ export async function clearMap(): Promise<string> {
   }
 }
 
+export async function getPosition(): Promise<string> {
+  const mapStore = getMapStore();
+  const pos = mapStore.getPosition();
+  return `Position: (${pos.x.toFixed(1)}, ${pos.y.toFixed(1)}) heading ${pos.heading.toFixed(1)}°`;
+}
+
+export const deleteWaypointSchema = z.object({
+  name: z.string().min(1).describe("Name of the waypoint to delete"),
+});
+
+export async function deleteWaypoint(
+  params: z.infer<typeof deleteWaypointSchema>
+): Promise<string> {
+  const mapStore = getMapStore();
+
+  const deleted = mapStore.deleteWaypoint(params.name);
+  if (deleted) {
+    return `Waypoint "${params.name}" deleted.`;
+  }
+  return `Waypoint "${params.name}" not found.`;
+}
+
 export const systemTools = {
   get_status: {
     name: "get_status",
@@ -118,6 +140,13 @@ export const systemTools = {
       "Get robot status including battery level, WiFi signal, current mode, and estimated position.",
     schema: z.object({}),
     handler: getStatus,
+  },
+  get_position: {
+    name: "get_position",
+    description:
+      "Quick check of current estimated position and heading. Lightweight alternative to get_status.",
+    schema: z.object({}),
+    handler: getPosition,
   },
   set_mode: {
     name: "set_mode",
@@ -139,5 +168,11 @@ export const systemTools = {
       "Clear all mapping data (scan readings and occupancy grid). Waypoints are preserved. Position is reset to origin.",
     schema: z.object({}),
     handler: clearMap,
+  },
+  delete_waypoint: {
+    name: "delete_waypoint",
+    description: "Delete a saved waypoint by name.",
+    schema: deleteWaypointSchema,
+    handler: deleteWaypoint,
   },
 };
