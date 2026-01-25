@@ -14,6 +14,7 @@ String readFromArduino(unsigned long timeout = 1000);
 void sendResponse(uint8_t clientNum, bool success, const char *cmd, JsonVariant data = JsonVariant(), const char *error = nullptr);
 void initCamera();
 String captureImage();
+String base64Encode(const uint8_t *data, size_t length);
 
 // Global objects
 WebSocketsServer webSocket(WS_PORT);
@@ -250,7 +251,7 @@ void processCommand(uint8_t clientNum, JsonDocument &doc) {
       DeserializationError err = deserializeJson(respDoc, response);
 
       JsonDocument data;
-      if (!err && respDoc.containsKey("D")) {
+      if (!err && respDoc["D"].is<float>()) {
         data["distance"] = respDoc["D"].as<float>();
       } else {
         data["distance"] = -1;
@@ -304,7 +305,7 @@ void processCommand(uint8_t clientNum, JsonDocument &doc) {
 
       JsonObject reading = readings.add<JsonObject>();
       reading["angle"] = angle;
-      if (!err && respDoc.containsKey("D")) {
+      if (!err && respDoc["D"].is<float>()) {
         reading["distance"] = respDoc["D"].as<float>();
       } else {
         reading["distance"] = -1;

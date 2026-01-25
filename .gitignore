@@ -23,6 +23,7 @@ Thumbs.db
 # PlatformIO
 firmware/esp32/.pio/
 firmware/esp32/.vscode/
+firmware/esp32/secrets.ini
 firmware/arduino/build/
 
 # Logs

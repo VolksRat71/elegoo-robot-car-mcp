@@ -6,9 +6,13 @@
 // Set to false to create an access point
 #define USE_STATION_MODE true
 
-// Station mode credentials (join existing network)
+// Station mode credentials (defined via build flags in secrets.ini)
+#ifndef WIFI_SSID
 #define WIFI_SSID "YOUR_WIFI_SSID"
+#endif
+#ifndef WIFI_PASSWORD
 #define WIFI_PASSWORD "YOUR_WIFI_PASSWORD"
+#endif
 
 // AP mode settings (fallback or primary)
 #define AP_SSID "ELEGOO-ROBOT"
