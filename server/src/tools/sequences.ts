@@ -140,10 +140,12 @@ async function executeAction(action: Action): Promise<{ success: boolean; messag
 export async function executeSequence(
   params: z.infer<typeof executeSequenceSchema>
 ): Promise<SequenceResult> {
+  const robot = getRobotClient();
   const mapStore = getMapStore();
   const results: string[] = [];
   let capturedImage: { data: string; mimeType: string } | null = null;
   let hasMidSequenceCapture = false;
+  let aborted = false;
 
   results.push(`Executing ${params.actions.length} actions...`);
   results.push("");
@@ -152,15 +154,31 @@ export async function executeSequence(
     const action = params.actions[i];
     const stepNum = i + 1;
 
+    // Check connection status before each action
+    if (!robot.isConnected()) {
+      results.push(`[${stepNum}] Connection lost - aborting sequence`);
+      aborted = true;
+      break;
+    }
+
     // Handle mid-sequence captures
     if (action.action === "capture") {
       hasMidSequenceCapture = true;
-      const imgResult = await captureImage();
-      const imgContent = imgResult.content.find(c => c.type === "image");
-      if (imgContent && imgContent.type === "image") {
-        capturedImage = { data: imgContent.data, mimeType: imgContent.mimeType };
+      try {
+        const imgResult = await captureImage();
+        const imgContent = imgResult.content.find(c => c.type === "image");
+        if (imgContent && imgContent.type === "image") {
+          capturedImage = { data: imgContent.data, mimeType: imgContent.mimeType };
+        }
+        results.push(`[${stepNum}] ✓ Captured image`);
+      } catch (error) {
+        results.push(`[${stepNum}] ✗ Capture failed: ${error instanceof Error ? error.message : "Unknown error"}`);
+        if (params.stop_on_error) {
+          results.push("");
+          results.push(`Sequence stopped at step ${stepNum} due to error.`);
+          break;
+        }
       }
-      results.push(`[${stepNum}] ✓ Captured image`);
       continue;
     }
 
@@ -170,6 +188,15 @@ export async function executeSequence(
       results.push(`[${stepNum}] ✓ ${result.message}`);
     } else {
       results.push(`[${stepNum}] ✗ ${result.message}`);
+
+      // Check if this was a connection error
+      if (result.message.includes("Connection lost") || result.message.includes("reconnecting")) {
+        results.push("");
+        results.push(`Sequence aborted - connection lost at step ${stepNum}.`);
+        aborted = true;
+        break;
+      }
+
       if (params.stop_on_error) {
         results.push("");
         results.push(`Sequence stopped at step ${stepNum} due to error.`);
@@ -178,7 +205,6 @@ export async function executeSequence(
     }
 
     // Small changeover delay between actions for stability
-    // (action durations are already waited inside executeAction)
     await new Promise(resolve => setTimeout(resolve, 150));
   }
 
@@ -187,13 +213,22 @@ export async function executeSequence(
   results.push("");
   results.push(`Final position: (${pos.x.toFixed(1)}, ${pos.y.toFixed(1)}) heading ${pos.heading.toFixed(1)}°`);
 
+  if (aborted) {
+    results.push("(Sequence was aborted - position may be inaccurate)");
+  }
+
   // Capture at end if requested and no mid-sequence capture
-  if (params.capture_at_end && !hasMidSequenceCapture) {
-    const imgResult = await captureImage();
-    const imgContent = imgResult.content.find(c => c.type === "image");
-    if (imgContent && imgContent.type === "image") {
-      capturedImage = { data: imgContent.data, mimeType: imgContent.mimeType };
-      results.push("Final image captured.");
+  // Skip if we aborted due to connection loss
+  if (params.capture_at_end && !hasMidSequenceCapture && !aborted) {
+    try {
+      const imgResult = await captureImage();
+      const imgContent = imgResult.content.find(c => c.type === "image");
+      if (imgContent && imgContent.type === "image") {
+        capturedImage = { data: imgContent.data, mimeType: imgContent.mimeType };
+        results.push("Final image captured.");
+      }
+    } catch (error) {
+      results.push(`Final image capture failed: ${error instanceof Error ? error.message : "Unknown error"}`);
     }
   }
 
