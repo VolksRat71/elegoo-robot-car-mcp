@@ -80,9 +80,9 @@ export class StockRobotClient extends EventEmitter {
   private robotHost: string;
   private robotPort: number;
   private reconnectInterval: NodeJS.Timeout | null = null;
+  private heartbeatInterval: NodeJS.Timeout | null = null;
   private status: RobotStatus = { connected: false };
   private responseBuffer: string = "";
-  private currentSpeed: number = 150; // Default speed (0-255)
   private pendingResponse: ((value: string) => void) | null = null;
   private lastDistance: number = 999; // Last known distance reading
 
@@ -104,8 +104,19 @@ export class StockRobotClient extends EventEmitter {
       this.socket.connect(this.robotPort, this.robotHost, () => {
         clearTimeout(timeout);
         this.status.connected = true;
+
+        // Enable TCP keepalive to prevent robot from dropping idle connections
+        // Sends probe after 1 second of inactivity
+        this.socket!.setKeepAlive(true, 1000);
+        // Disable Nagle's algorithm for faster command transmission
+        this.socket!.setNoDelay(true);
+
         this.emit("connected");
         console.error(`Connected to robot at ${this.robotHost}:${this.robotPort}`);
+
+        // Start application-level heartbeat to keep connection active
+        this.startHeartbeat();
+
         resolve();
       });
 
@@ -170,6 +181,9 @@ export class StockRobotClient extends EventEmitter {
   private startReconnect(): void {
     if (this.reconnectInterval) return;
 
+    // Stop heartbeat when disconnected
+    this.stopHeartbeat();
+
     this.reconnectInterval = setInterval(async () => {
       console.error("Attempting to reconnect to robot...");
       try {
@@ -182,6 +196,34 @@ export class StockRobotClient extends EventEmitter {
         // Will retry on next interval
       }
     }, 5000);
+  }
+
+  private startHeartbeat(): void {
+    if (this.heartbeatInterval) return;
+
+    // Send a lightweight status check every 3 seconds to keep connection alive
+    // The Elegoo firmware seems to close idle connections
+    this.heartbeatInterval = setInterval(() => {
+      if (this.socket && this.status.connected) {
+        try {
+          // Request ground check - lightweight command that won't affect robot state
+          this.sendCommand(CMD.GROUND_CHECK);
+        } catch {
+          // If send fails, connection is dead - will trigger close event
+        }
+      }
+    }, 3000);
+  }
+
+  private stopHeartbeat(): void {
+    if (this.heartbeatInterval) {
+      clearInterval(this.heartbeatInterval);
+      this.heartbeatInterval = null;
+    }
+  }
+
+  isConnected(): boolean {
+    return this.status.connected;
   }
 
   async ensureConnected(): Promise<void> {
@@ -243,7 +285,6 @@ export class StockRobotClient extends EventEmitter {
 
     // Convert 0-100 speed to 0-250 (Elegoo max)
     const mappedSpeed = Math.round((speed / 100) * 250);
-    this.currentSpeed = mappedSpeed;
 
     // N=1 Motor control: D1=motor(0=all), D2=speed(0-250), D3=direction(0=stop,1=fwd,2=back)
     // For turning, we control individual motors
@@ -346,6 +387,7 @@ export class StockRobotClient extends EventEmitter {
 
   async emergencyStop(): Promise<RobotResponse> {
     try {
+      await this.ensureConnected();
       // Send stop command immediately using N=1 (motor control)
       // D1=0 (all motors), D2=0 (speed), D3=0 (stop)
       this.sendCommand(CMD.MOTOR_CONTROL, 0, 0, 0);
@@ -362,6 +404,7 @@ export class StockRobotClient extends EventEmitter {
   }
 
   async look(angle: number): Promise<RobotResponse> {
+    await this.ensureConnected();
     // Servo angle: 0-180 degrees
     const clampedAngle = Math.max(0, Math.min(180, angle));
 
@@ -561,6 +604,7 @@ export class StockRobotClient extends EventEmitter {
   }
 
   disconnect(): void {
+    this.stopHeartbeat();
     if (this.reconnectInterval) {
       clearInterval(this.reconnectInterval);
       this.reconnectInterval = null;
