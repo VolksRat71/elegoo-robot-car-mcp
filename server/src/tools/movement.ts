@@ -20,6 +20,22 @@ export const driveSchema = z.object({
     .describe("Duration in milliseconds. If omitted, robot moves until stop command."),
 });
 
+export const safeDriveSchema = z.object({
+  direction: z
+    .enum(["forward", "backward", "left", "right", "stop"])
+    .describe("Direction to move the robot"),
+  speed: z
+    .number()
+    .min(0)
+    .max(100)
+    .default(50)
+    .describe("Speed as percentage (0-100)"),
+  check_obstacles: z
+    .boolean()
+    .default(false)
+    .describe("Enable obstacle checking (currently experimental - sensor may not work reliably)"),
+});
+
 export const turnSchema = z.object({
   degrees: z
     .number()
@@ -63,6 +79,37 @@ export async function drive(
     }
 
     return `Robot moving ${params.direction} at ${params.speed}% speed. Send stop command to halt.`;
+  } catch (error) {
+    return `Error: ${error instanceof Error ? error.message : "Unknown error"}`;
+  }
+}
+
+export async function safeDrive(
+  params: z.infer<typeof safeDriveSchema>
+): Promise<string> {
+  const robot = getRobotClient();
+
+  try {
+    const response = await robot.safeDrive(
+      params.direction,
+      params.speed,
+      params.check_obstacles
+    );
+
+    if (!response.success) {
+      const data = response.data as { blocked?: boolean };
+      if (data?.blocked) {
+        return `BLOCKED: ${response.error}`;
+      }
+      return `Failed to drive: ${response.error || "Unknown error"}`;
+    }
+
+    if (params.direction === "stop") {
+      return "Robot stopped.";
+    }
+
+    const obstacleNote = params.check_obstacles ? " (obstacle checking enabled)" : "";
+    return `Robot moving ${params.direction} at ${params.speed}% speed${obstacleNote}`;
   } catch (error) {
     return `Error: ${error instanceof Error ? error.message : "Unknown error"}`;
   }
@@ -119,6 +166,13 @@ export const movementTools = {
       "Move the robot in a direction. Use 'stop' to halt movement. If duration_ms is specified, robot moves for that duration then stops automatically.",
     schema: driveSchema,
     handler: drive,
+  },
+  safe_drive: {
+    name: "safe_drive",
+    description:
+      "Move the robot with automatic obstacle detection. Checks ultrasonic sensor before moving forward and stops if obstacle is closer than min_distance. RECOMMENDED over regular drive for forward movement.",
+    schema: safeDriveSchema,
+    handler: safeDrive,
   },
   turn: {
     name: "turn",

@@ -11,7 +11,7 @@ export async function getDistance(): Promise<string> {
       return `Failed to read distance sensor: ${response.error || "Unknown error"}`;
     }
 
-    const data = response.data as { distance: number };
+    const data = response.data as { distance: number; note?: string };
 
     if (data.distance === undefined || data.distance === null) {
       return "Distance sensor returned no data.";
@@ -30,7 +30,8 @@ export async function getDistance(): Promise<string> {
       description = "Clear path ahead";
     }
 
-    return `Distance: ${data.distance.toFixed(1)} cm - ${description}`;
+    const note = data.note ? ` (${data.note})` : "";
+    return `Distance: ${data.distance} cm - ${description}${note}`;
   } catch (error) {
     return `Error reading distance: ${error instanceof Error ? error.message : "Unknown error"}`;
   }
