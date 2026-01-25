@@ -1,24 +1,30 @@
 /*
- * Minimal Motor Test for Elegoo V4
+ * Minimal Motor Test for Elegoo V4 (v1.1 Shield)
  * This directly controls the motors bypassing all other code.
  * Motors should spin forward for 2 seconds, then backward for 2 seconds, repeat.
  */
 
-// Motor pins (from Elegoo V4 schematic)
-#define PIN_Motor_PWMA 5   // Right motor speed
-#define PIN_Motor_PWMB 6   // Left motor speed
-#define PIN_Motor_AIN_1 8  // Right motor direction
+// Motor pins for SmartCar-Shield-v1.1 with DRV8835 driver
+#define PIN_Motor_PWMA 5   // Right motor speed (PWM)
+#define PIN_Motor_PWMB 6   // Left motor speed (PWM)
+#define PIN_Motor_STBY 8   // Standby - MUST be HIGH to enable motors!
 #define PIN_Motor_BIN_1 7  // Left motor direction
+#define PIN_Motor_AIN_1 9  // Right motor direction (was 8 on newer boards)
 
 void setup() {
   Serial.begin(9600);
-  Serial.println("Motor Test Starting...");
+  Serial.println("Motor Test Starting (v1.1 Shield)...");
 
   // Set all motor pins as outputs
   pinMode(PIN_Motor_PWMA, OUTPUT);
   pinMode(PIN_Motor_PWMB, OUTPUT);
   pinMode(PIN_Motor_AIN_1, OUTPUT);
   pinMode(PIN_Motor_BIN_1, OUTPUT);
+  pinMode(PIN_Motor_STBY, OUTPUT);
+
+  // CRITICAL: Enable the motor driver by setting STBY HIGH
+  digitalWrite(PIN_Motor_STBY, HIGH);
+  Serial.println("STBY pin set HIGH - motor driver enabled");
 
   Serial.println("Pins configured");
 }
