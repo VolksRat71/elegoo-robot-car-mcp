@@ -8,8 +8,11 @@ import {
 } from "@modelcontextprotocol/sdk/types.js";
 import { z } from "zod";
 
-import { getRobotClient } from "./robot-client.js";
+import { getStockRobotClient } from "./robot-client-stock.js";
 import { getMapStore } from "./map-store.js";
+
+// Use stock client for Elegoo's built-in firmware
+const getRobotClient = getStockRobotClient;
 import { movementTools } from "./tools/movement.js";
 import { visionTools } from "./tools/vision.js";
 import { sensorTools } from "./tools/sensors.js";
