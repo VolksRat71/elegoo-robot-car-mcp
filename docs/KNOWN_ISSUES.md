@@ -4,43 +4,46 @@
 
 ---
 
+## HC-SR04 Ultrasonic Sensor Unreliable
+
+**Status**: Hardware limitation - VL53L1X ToF sensor ordered
+
+The stock HC-SR04 ultrasonic sensor gives inconsistent readings:
+- Can report 4cm then 100cm for same object position
+- Even with 5-sample median filtering, still unreliable
+- Not suitable for precise navigation
+
+**Mitigations (2026-01-26):**
+- 5-sample median filtering in firmware
+- MCP-side smoothing rejects jumps >40cm
+- Works OK for obstacle detection (close/far), not precision
+
+**Solution**: VL53L1X Time-of-Flight sensor ordered
+- Uses I2C (A4/A5 pins now available after MPU6050 removal)
+- Much more accurate (mm precision)
+- Will require firmware driver update
+
+**Files**:
+- `firmware/arduino/SmartCarModified/DeviceDriverSet_xxx0.cpp`
+- `server/src/robot-client-stock.ts` → `getDistance()`
+
+---
+
 ## Connection Drops
 
-**Status**: Partially mitigated
+**Status**: Improved (2026-01-26)
 
-TCP connection to robot (port 100) drops intermittently:
-- After idle periods
-- During rapid command sequences
-- Sometimes mid-sequence
+TCP connection to robot (port 100) drops intermittently.
 
-**Mitigations (2025-01-25):**
-- Command queue serializes requests (one in-flight at a time)
-- Auto-reconnection on socket errors
+**Mitigations:**
+- Command queue serializes requests
+- Commands wait for reconnection (up to 5s) instead of failing
+- Immediate reconnection attempt, then every 2s
+- Socket close event guarded against spurious triggers
 - 10s heartbeat interval
 - Emergency stop bypasses queue
 
 **Files**: `server/src/robot-client-stock.ts`
-
-**Next steps**: Sniff Elegoo app traffic to find protocol differences
-
----
-
-## Ultrasonic Returns Boolean, Not Distance
-
-**Status**: Fix identified, not implemented
-
-The `get_distance()` tool returns estimated values (15cm or 100cm) instead of actual readings.
-
-**Root cause**: MCP sends D1=1 (boolean mode) instead of D1=2 (distance mode).
-
-**Fix**:
-1. Change `getDistance()` to send `{N:21, D1:2}`
-2. Parse numeric response `{1_XXX}` where XXX = cm
-3. Firmware caps at 150cm max
-
-**Files**:
-- `server/src/robot-client-stock.ts` → `getDistance()`
-- `server/src/tools/sensors.ts`
 
 ---
 
@@ -66,10 +69,22 @@ The ESP32-S3 board's USB-C port doesn't expose data lines. Cannot flash custom f
 
 ---
 
-## Build: FastLED Version Sensitivity
+## Resolved Issues
+
+### Ultrasonic Returns Boolean, Not Distance
+
+**Status**: Fixed (2026-01-26)
+
+Was sending D1=1 (boolean), now sends D1=2 (numeric cm). Falls back to D1=1 if firmware doesn't support D1=2.
+
+### Build: FastLED Version Sensitivity
 
 **Status**: Resolved
 
-FastLED 3.10.x causes firmware to exceed flash limit. Using FastLED 3.4.0 works.
+FastLED 3.10.x causes firmware to exceed flash limit. Using FastLED 3.4.0 with Arduino Uno target (32KB flash).
 
-**Fix**: Makefile uses Arduino Uno target (32KB flash) instead of Nano (30KB).
+### Firmware Size
+
+**Status**: Resolved (2026-01-26)
+
+Firmware reduced from 31KB (96%) to 21KB (65%) by removing IR remote, MPU6050, Follow mode, Rocker mode, and complex LED patterns.
