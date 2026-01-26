@@ -107,6 +107,9 @@
 #define BUTTON_DEBOUNCE_MS      50      // Debounce time for button
 #define MODE_COUNT_MAX          4       // Number of operating modes
 
+// Legacy alias
+#define keyValue_Max        MODE_COUNT_MAX
+
 // ============================================================================
 // IR REMOTE CODES (Remote A)
 // ============================================================================

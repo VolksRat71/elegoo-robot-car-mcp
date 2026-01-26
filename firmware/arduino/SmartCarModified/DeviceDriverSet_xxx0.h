@@ -47,7 +47,6 @@ public:
 #endif
 
 public:
-    static const uint8_t keyValue_Max = MODE_COUNT_MAX;
     static uint8_t keyValue;
 };
 
