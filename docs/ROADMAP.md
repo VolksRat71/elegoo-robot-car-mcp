@@ -1,171 +1,168 @@
 # Roadmap
 
+> For design rationale and architecture details, see [ARCHITECTURE.md](./ARCHITECTURE.md)
+
+---
+
 ## Current State (v1.0)
 
-Basic robot control via MCP:
-- Movement commands (drive, turn, stop)
-- Camera capture (still images)
-- Servo pan control
-- Simple waypoint navigation (dead reckoning)
-- Command queue for stability
-- Auto-reconnection on WiFi drops
+### Working
+- [x] Basic movement commands (drive, turn, stop)
+- [x] Camera capture (still images)
+- [x] Servo pan control
+- [x] Dead reckoning waypoint navigation
+- [x] Command queue for stability
+- [x] Auto-reconnection on WiFi drops
+- [x] Custom Arduino firmware base (`SmartCarModified/`)
+- [x] Makefile build system (`make flash-modified`)
+- [x] Consolidated pin definitions (`pins.h`)
+- [x] Consolidated constants (`config.h`)
+
+### Known Bugs
+See [KNOWN_ISSUES.md](./KNOWN_ISSUES.md) for details.
+- [ ] Ultrasonic returns boolean instead of cm (fix identified)
+- [ ] Connection drops intermittently
+- [ ] Line sensor async response not fully parsed
 
 ---
 
-## Phase 1: Stability & Sensors
+## Phase 1: Slim Firmware
 
-### Fix Ultrasonic Sensor
-**Root cause identified** - firmware works correctly, MCP parsing is wrong.
+Strip Arduino firmware down to navigation essentials.
 
-- [ ] Update `robot-client-stock.ts` `getDistance()` to send D1=2 (distance mode) instead of D1=1 (boolean mode)
-- [ ] Parse numeric response from `{1_XXX}` format where XXX is distance in cm
-- [ ] Update `sensors.ts` to return actual cm values instead of estimates
-- [ ] Note: Firmware caps readings at 150cm max, threshold for obstacle is 20cm
+### Remove
+- [ ] IRremote library (~50KB)
+- [ ] MPU6050 library (~85KB)
+- [ ] RGB LED code
+- [ ] Voice control code
+- [ ] Mode button handling
+- [ ] Follow mode
+- [ ] Rocker (joystick) mode
+- [ ] LED expression code
+- [ ] ArduinoJson (use simple parser)
 
-### Improve Connection Reliability
-- [ ] Capture and analyze Elegoo app protocol (Wireshark/packet capture)
-- [ ] Test WebSocket vs raw TCP if app uses different transport
-- [ ] Identify any initialization/handshake sequence we're missing
-- [ ] Add connection health monitoring and preemptive reconnection
+### Keep
+- [x] Motor driver (TB6612)
+- [x] Ultrasonic sensor (HC-SR04)
+- [x] Servo (pan)
+- [x] Line sensors (3x IR)
+- [x] Serial command interface
 
-### Line Tracking Integration
-- [ ] Properly parse async sensor responses
-- [ ] Add line-following mode that uses sensor data
-- [ ] Create line-tracking patterns/behaviors
-
----
-
-## Phase 2: Computer Vision & Landmarks
-
-### Local Vision Processing
-Run lightweight vision models on the host computer to analyze camera images:
-
-- [ ] **Object Detection**: Identify common objects (chairs, tables, doors, people)
-- [ ] **Text Recognition**: Read signs, labels, text in environment
-- [ ] **Color/Shape Detection**: Find colored markers or specific shapes
-- [ ] **Scene Description**: Generate text metadata about what the camera sees
-
-**Implementation ideas:**
-```
-┌─────────────┐     ┌─────────────┐     ┌─────────────┐
-│   Robot     │────►│  MCP Server │────►│  Vision     │
-│   Camera    │ img │             │ img │  Model      │
-└─────────────┘     └─────────────┘     └─────────────┘
-                           │                   │
-                           │◄──────────────────┘
-                           │   metadata: "red door on left,
-                           │              chair ahead 2m,
-                           │              sign says EXIT"
-```
-
-- Use YOLO, MobileNet, or similar for object detection
-- Use Tesseract or EasyOCR for text recognition
-- Cache/stream analysis so it's available during navigation
-
-### Visual Landmarks for Position Correction
-- [ ] Define landmark types (QR codes, ArUco markers, distinctive objects)
-- [ ] Place physical markers in environment at known positions
-- [ ] When landmark detected, correct dead reckoning position
-- [ ] Build visual map of landmark locations
-
-### Continuous Vision Mode
-- [ ] Background thread captures images periodically
-- [ ] Maintains rolling buffer of recent visual context
-- [ ] Generates text descriptions that Claude can query
-- [ ] Alerts on significant changes (new object, obstacle appeared)
+### Add
+- [ ] `CMD_DriveUntilObstacle(speed, threshold_cm)`
+- [ ] `CMD_ScanArc(start_angle, end_angle, step)`
+- [ ] `CMD_FollowWall(side, speed, duration_ms)`
+- [ ] `CMD_StartSensorStream(interval_ms)`
+- [ ] `CMD_StopSensorStream()`
 
 ---
 
-## Phase 3: Autonomous Behaviors
+## Phase 2: Server Navigation Module
 
-### Exploration Mode
-- [ ] Systematic room exploration using obstacle detection
-- [ ] Build occupancy grid map as robot moves
-- [ ] Mark explored vs unexplored areas
-- [ ] Return to unexplored areas
+Build the "brain" in the MCP server.
 
-### Search & Find
-- [ ] "Find the red ball" - combines vision + movement
-- [ ] Spiral search pattern with visual scanning
-- [ ] Report when target found with location
+### Occupancy Grid
+- [ ] `OccupancyGrid` class (cell states: unknown/wall/open/visited)
+- [ ] Grid update from sensor readings
+- [ ] ASCII and JSON export
+- [ ] Configurable resolution (cm per cell)
 
-### Patrol Mode
-- [ ] Define patrol route via waypoints
-- [ ] Continuously loop through waypoints
-- [ ] Report anomalies detected during patrol
-- [ ] Return to charging station when battery low
+### Pathfinding
+- [ ] A* pathfinder implementation
+- [ ] Path replanning on obstacle detection
+- [ ] Waypoint-to-waypoint navigation
+
+### SQLite Storage
+- [ ] `grid_cells` table (x, y, state, confidence)
+- [ ] `waypoints` table (name, x, y, heading)
+- [ ] `sessions` table (exploration history)
+- [ ] `sensor_log` table (optional, for replay/debug)
+
+### Navigation Behaviors
+- [ ] Frontier-based exploration
+- [ ] Wall following
+- [ ] Spiral search pattern
 
 ---
 
-## Phase 4: Custom Firmware (If USB Programming Solved)
+## Phase 3: High-Level MCP Tools
+
+Tools Claude uses for strategic commands.
+
+### Core Tools
+- [ ] `explore_area(bounds?, max_duration_s?)` → autonomous mapping
+- [ ] `navigate_to(target)` → goal-based pathfinding
+- [ ] `get_map(format)` → return current occupancy grid
+- [ ] `mark_location(name, notes?)` → save waypoint
+- [ ] `find_path(from, to)` → plan without executing
+- [ ] `list_waypoints()` → return saved locations
+
+### Fix Existing Tools
+- [ ] `get_distance()` → return actual cm (not boolean estimate)
+- [ ] `get_line_sensors()` → properly parse async response
+
+---
+
+## Phase 4: Refinement
+
+Polish and optimize.
+
+### Performance
+- [ ] Sensor streaming mode (continuous updates vs polling)
+- [ ] Faster servo scanning
+- [ ] Reduce command latency
+
+### Localization
+- [ ] Reduce dead reckoning drift
+- [ ] Visual landmark support (if camera used)
+- [ ] Position confidence tracking
+
+### Reliability
+- [ ] Better connection health monitoring
+- [ ] Graceful degradation on sensor failure
+- [ ] Recovery from stuck states
+
+---
+
+## Future (Nice to Have)
 
 ### ESP32 Custom Firmware
-If we get USB programming working (external UART adapter):
-
+Requires USB-to-TTL adapter for flashing.
 - [ ] Stable TCP server with proper keep-alive
-- [ ] WebSocket support for reliable bidirectional comms
-- [ ] Proper ultrasonic distance readings
-- [ ] Direct motor PWM control for smoother movement
-- [ ] Encoder feedback for accurate odometry
-- [ ] OTA update support
+- [ ] WebSocket support
+- [ ] OTA updates
 
-### Arduino Firmware Enhancements
-The Arduino (Uno) connected via serial can be modified. **Custom firmware base created (2025-01-26).**
+### Computer Vision
+- [ ] Object detection (YOLO/MobileNet)
+- [ ] Text recognition (OCR)
+- [ ] ArUco marker detection for localization
 
-**Completed:**
-- [x] Created modifiable copy at `firmware/arduino/SmartCarModified/`
-- [x] Consolidated all pin definitions into `pins.h` with documentation
-- [x] Consolidated all constants/thresholds into `config.h`
-- [x] Added Makefile for easy compile/flash (`make flash-modified`, `make flash-stock`)
-- [x] Verified compiles and runs identically to stock
+### Multi-Robot
+- [ ] Fleet coordination
+- [ ] Collision avoidance between robots
 
-**Future enhancements:**
-- [ ] Add encoder reading commands
-- [ ] Expose raw sensor values
-- [ ] Add PID motor control
-- [ ] Battery voltage monitoring
-- [ ] Custom serial commands for MCP
-
----
-
-## Phase 5: Multi-Robot & Integration
-
-### Fleet Control
-- [ ] Support multiple robots on same network
-- [ ] Coordinate movements to avoid collisions
-- [ ] Task distribution across robots
-
-### Home Assistant Integration
-- [ ] Expose robot as HA device
-- [ ] Trigger movements from automations
-- [ ] Security patrol integration
-
-### Voice Control
-- [ ] Integrate with voice assistants
-- [ ] Natural language movement commands
-- [ ] Status reporting via speech
-
----
-
-## Technical Debt
-
-- [ ] Add unit tests for robot client
-- [ ] Add integration tests with mock robot
-- [ ] TypeScript strict mode
-- [ ] Better error types and handling
-- [ ] Logging levels and configuration
-- [ ] Configuration file support (not just env vars)
-- [ ] Docker container for easy deployment
+### Integrations
+- [ ] Home Assistant
+- [ ] Voice control
 
 ---
 
 ## Hardware Wishlist
 
-Things that would make this project better with hardware additions:
+| Item | Purpose |
+|------|---------|
+| Wheel encoders | Accurate odometry |
+| USB-to-TTL adapter | Flash ESP32 firmware |
+| Second ultrasonic (rear) | Safe reversing |
+| Compass/IMU | Heading accuracy |
 
-1. **USB-to-TTL adapter** - To flash ESP32 via TX/RX pins
-2. **External ultrasonic sensor** - HC-SR04 connected to Arduino GPIO
-3. **Wheel encoders** - For accurate odometry
-4. **IMU/Compass** - For heading accuracy
-5. **Better camera module** - Higher resolution, wider angle
-6. **ArUco/QR markers** - For visual landmark system
+---
+
+## Technical Debt
+
+- [ ] Unit tests for robot client
+- [ ] Integration tests with mock robot
+- [ ] TypeScript strict mode
+- [ ] Better error types
+- [ ] Logging configuration
+- [ ] Docker container

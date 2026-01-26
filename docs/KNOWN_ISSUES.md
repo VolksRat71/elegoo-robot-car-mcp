@@ -1,153 +1,75 @@
 # Known Issues
 
-## Connection Stability
+> For design decisions and architecture, see [ARCHITECTURE.md](./ARCHITECTURE.md)
 
-### WiFi/TCP Connection Drops
-**Status**: Partially mitigated, not fully solved
+---
 
-The TCP connection to the robot (port 100) drops intermittently, especially:
+## Connection Drops
+
+**Status**: Partially mitigated
+
+TCP connection to robot (port 100) drops intermittently:
 - After idle periods
 - During rapid command sequences
 - Sometimes mid-sequence
 
-**Mitigations implemented (2025-01-25):**
-- Command queue to serialize all robot commands (one in-flight at a time)
-- Improved socket error handling with automatic reconnection
-- Heartbeat interval increased from 3s to 10s to reduce interference
-- Sequences abort gracefully on connection loss
-- Emergency stop bypasses queue and clears pending commands
+**Mitigations (2025-01-25):**
+- Command queue serializes requests (one in-flight at a time)
+- Auto-reconnection on socket errors
+- 10s heartbeat interval
+- Emergency stop bypasses queue
 
-**Root cause:**
-The ESP32-S3 module running Elegoo's stock firmware handles the WiFi/TCP server. We cannot modify this firmware (see ESP32 Firmware section below). The Elegoo mobile app appears to work more reliably, suggesting there may be protocol nuances we're missing.
+**Files**: `server/src/robot-client-stock.ts`
 
-**Potential investigations:**
-- Sniff traffic from Elegoo app to see if they use different protocol/timing
-- Check if WebSocket vs raw TCP makes a difference
-- Investigate if there's a specific keep-alive or handshake sequence
+**Next steps**: Sniff Elegoo app traffic to find protocol differences
 
 ---
 
-## Ultrasonic Sensor
+## Ultrasonic Returns Boolean, Not Distance
 
-### MCP Returns Estimated Distance Instead of Actual Readings
-**Status**: Root cause identified, fix pending
+**Status**: Fix identified, not implemented
 
-**Investigation findings (2025-01-26):**
-The Arduino firmware *correctly* reads and returns actual distance values. The issue is in the MCP server's response parsing.
+The `get_distance()` tool returns estimated values (15cm or 100cm) instead of actual readings.
 
-**How it actually works:**
-- Command N=21 with D1=1: Returns `{1_true}` or `{1_false}` (obstacle within 20cm threshold)
-- Command N=21 with D1=2: Returns `{1_XXX}` where XXX is actual distance in cm (0-150)
+**Root cause**: MCP sends D1=1 (boolean mode) instead of D1=2 (distance mode).
 
-**Firmware implementation** (`ApplicationFunctionSet_xxx0.cpp:1517-1544`):
-```cpp
-void ApplicationFunctionSet::CMD_UltrasoundModuleStatus_xxx0(uint8_t is_get)
-{
-  AppULTRASONIC.DeviceDriverSet_ULTRASONIC_Get(&UltrasoundData_cm);
-  UltrasoundDetectionStatus = function_xxx(UltrasoundData_cm, 0, ObstacleDetection);
+**Fix**:
+1. Change `getDistance()` to send `{N:21, D1:2}`
+2. Parse numeric response `{1_XXX}` where XXX = cm
+3. Firmware caps at 150cm max
 
-  if (is_get == 1) {  // Boolean obstacle mode
-    Serial.print('{' + CommandSerialNumber + (UltrasoundDetectionStatus ? "_true}" : "_false}"));
-  }
-  else if (is_get == 2) {  // Actual distance mode
-    char toString[10];
-    sprintf(toString, "%d", UltrasoundData_cm);
-    Serial.print('{' + CommandSerialNumber + '_' + toString + '}');
-  }
-}
-```
-
-**The actual bug:**
-The MCP server's `getDistance()` in `robot-client-stock.ts` sends D1=1 (boolean mode) and then estimates distance based on true/false. It should send D1=2 and parse the numeric response.
-
-**Current workaround:**
-- `true` (obstacle detected) → reports 15cm
-- `false` (clear) → reports 100cm
-
-**Fix required:**
-1. Change `getDistance()` to send D1=2 instead of D1=1
-2. Parse the numeric response from `{1_XXX}` format
-3. Note: Firmware caps readings at 150cm max
-
-**Files affected:**
-- `server/src/robot-client-stock.ts` - `getDistance()`, `hasObstacle()`
+**Files**:
+- `server/src/robot-client-stock.ts` → `getDistance()`
 - `server/src/tools/sensors.ts`
 
 ---
 
-## ESP32 Firmware
+## Line Sensors Async Response
 
-### Cannot Flash Custom Firmware via USB-C
-**Status**: Blocked
-
-The ESP32-S3-WROOM-1 on the ESP32S3-Camera-V1.0 board has a USB-C port, but:
-- Does not appear as a USB device when connected to computer
-- Tried bootloader mode (BOOT + RESET sequence)
-- Installed CH340 driver (not needed for ESP32-S3 native USB)
-- The USB-C port appears to be **power-only**, not connected to USB data lines
-
-**Hardware details:**
-- Chip: ESP32-S3-WROOM-1 (Espressif)
-- Board: ESP32S3-Camera-V1.0
-- The ESP32-S3 has native USB support, so no external UART chip needed IF the USB lines were connected
-
-**Alternatives to explore:**
-1. Use a USB-to-TTL adapter (FTDI, CP2102) connected to TX/RX pins on the board
-2. Check if Elegoo sells a programming dock
-3. Find alternative ESP32-CAM board with working USB programming
-
-**Why this matters:**
-Custom ESP32 firmware would let us:
-- Fix connection stability at the source
-- Add WebSocket support for more reliable connections
-- Get proper ultrasonic distance readings
-- Add more features without Arduino modification
-
----
-
-## Line Tracking Sensors
-
-### Async Response Not Fully Integrated
 **Status**: Partial implementation
 
-The line tracking sensors (N=22 command) return data asynchronously. Current implementation sends the command but doesn't properly wait for/parse the response.
+Line tracking command (N=22) returns data asynchronously. Current code doesn't properly wait for/parse the response.
 
-**Files affected:**
-- `server/src/robot-client-stock.ts` - `getLineSensors()`
+**Files**:
+- `server/src/robot-client-stock.ts` → `getLineSensors()`
 - `server/src/tools/sensors.ts`
 
 ---
 
-## Position Tracking
+## ESP32 USB-C is Power Only
 
-### Dead Reckoning Drift
-**Status**: Expected behavior, needs improvement
+**Status**: Hardware limitation
 
-Position estimation uses dead reckoning based on:
-- Movement direction and duration
-- Assumed speed
-- Turn angles
+The ESP32-S3 board's USB-C port doesn't expose data lines. Cannot flash custom firmware via USB.
 
-This accumulates error over time. The robot's actual position will drift from estimated position, especially after:
-- Multiple turns
-- Wheel slippage
-- Obstacle collisions
-
-**Future solutions:**
-- Visual landmark recognition for position correction
-- Use camera to identify known objects/locations
-- Implement SLAM-lite with obstacle map
+**Workaround**: Use USB-to-TTL adapter on TX/RX pins (not yet attempted).
 
 ---
 
-## Camera
+## Build: FastLED Version Sensitivity
 
-### No Video Streaming
-**Status**: By design (current implementation)
+**Status**: Resolved
 
-Camera only captures still images via HTTP GET to `/capture`. Video streaming would require:
-- MJPEG stream parsing
-- Higher bandwidth handling
-- Different MCP tool design (streaming vs request/response)
+FastLED 3.10.x causes firmware to exceed flash limit. Using FastLED 3.4.0 works.
 
-The stock firmware does support MJPEG streaming (used by Elegoo app), but implementing this in MCP is non-trivial.
+**Fix**: Makefile uses Arduino Uno target (32KB flash) instead of Nano (30KB).
