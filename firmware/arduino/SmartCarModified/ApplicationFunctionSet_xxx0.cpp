@@ -357,142 +357,42 @@ static void CMD_Lighting(uint8_t is_LightingSequence, int8_t is_LightingColorVal
   }
 }
 
-/*RBG_LED set*/
+/*RGB LED - Simplified status indicator*/
 void ApplicationFunctionSet::ApplicationFunctionSet_RGB(void)
 {
-  static unsigned long getAnalogue_time = 0;
-  FastLED.clear(true);
-  if (true == VoltageDetectionStatus) //Act on low power state？
-  {
-    if ((millis() - getAnalogue_time) > 3000)
-    {
-      getAnalogue_time = millis();
-    }
-  }
-  unsigned long temp = millis() - getAnalogue_time;
-  if (function_xxx((temp), 0, 500) && VoltageDetectionStatus == true)
-  {
-    switch (temp)
-    {
-    case /* constant-expression */ 0 ... 49:
-      /* code */
-      AppRBG_LED.DeviceDriverSet_RBGLED_xxx(0 /*Duration*/, 2 /*Traversal_Number*/, CRGB::Red);
-      break;
-    case /* constant-expression */ 50 ... 99:
-      /* code */
-      AppRBG_LED.DeviceDriverSet_RBGLED_xxx(0 /*Duration*/, 2 /*Traversal_Number*/, CRGB::Black);
-      break;
-    case /* constant-expression */ 100 ... 149:
-      /* code */
-      AppRBG_LED.DeviceDriverSet_RBGLED_xxx(0 /*Duration*/, 2 /*Traversal_Number*/, CRGB::Red);
-      break;
-    case /* constant-expression */ 150 ... 199:
-      /* code */
-      AppRBG_LED.DeviceDriverSet_RBGLED_xxx(0 /*Duration*/, 2 /*Traversal_Number*/, CRGB::Black);
-      break;
-    case /* constant-expression */ 200 ... 249:
-      /* code */
-      AppRBG_LED.DeviceDriverSet_RBGLED_xxx(0 /*Duration*/, 2 /*Traversal_Number*/, CRGB::Red);
-      break;
-    case /* constant-expression */ 250 ... 299:
-      /* code */
-      AppRBG_LED.DeviceDriverSet_RBGLED_xxx(0 /*Duration*/, 2 /*Traversal_Number*/, CRGB::Red);
-      break;
-    case /* constant-expression */ 300 ... 349:
-      /* code */
-      AppRBG_LED.DeviceDriverSet_RBGLED_xxx(0 /*Duration*/, 2 /*Traversal_Number*/, CRGB::Black);
-      break;
-    case /* constant-expression */ 350 ... 399:
-      /* code */
-      AppRBG_LED.DeviceDriverSet_RBGLED_xxx(0 /*Duration*/, 2 /*Traversal_Number*/, CRGB::Red);
-      break;
-    case /* constant-expression */ 400 ... 449:
-      /* code */
-      AppRBG_LED.DeviceDriverSet_RBGLED_xxx(0 /*Duration*/, 2 /*Traversal_Number*/, CRGB::Black);
-      break;
-    case /* constant-expression */ 450 ... 499:
-      /* code */
-      AppRBG_LED.DeviceDriverSet_RBGLED_xxx(0 /*Duration*/, 2 /*Traversal_Number*/, CRGB::Red);
-      break;
-    default:
-      break;
-    }
-  }
-  else if (((function_xxx((temp), 500, 3000)) && VoltageDetectionStatus == true) || VoltageDetectionStatus == false)
-  {
-    switch (Application_SmartRobotCarxxx0.Functional_Mode) //Act on mode control sequence
-    {
-    case /* constant-expression */ Standby_mode:
-      /* code */
-      {
-        if (VoltageDetectionStatus == true)
-        {
-          AppRBG_LED.DeviceDriverSet_RBGLED_xxx(0 /*Duration*/, 2 /*Traversal_Number*/, CRGB::Red);
-          delay(30);
-          AppRBG_LED.DeviceDriverSet_RBGLED_xxx(0 /*Duration*/, 2 /*Traversal_Number*/, CRGB::Black);
-          delay(30);
-        }
-        else
-        {
-          static uint8_t setBrightness = 0;
-          static boolean et = false;
-          static unsigned long time = 0;
+  static unsigned long lastUpdate = 0;
+  static bool blinkState = false;
 
-          if ((millis() - time) > 10)
-          {
-            time = millis();
-            if (et == false)
-            {
-              setBrightness += 1;
-              if (setBrightness == 100)
-                et = true;
-            }
-            else if (et == true)
-            {
-              setBrightness -= 1;
-              if (setBrightness == 0)
-                et = false;
-            }
-          }
-          // AppRBG_LED.leds[1] = CRGB::Blue;
-          AppRBG_LED.leds[0] = CRGB::Violet;
-          FastLED.setBrightness(setBrightness);
-          FastLED.show();
-        }
-      }
-      break;
-    case /* constant-expression */ CMD_Programming_mode:
-      /* code */
-      {
-      }
-      break;
-    case /* constant-expression */ TraceBased_mode:
-      /* code */
-      {
-        AppRBG_LED.DeviceDriverSet_RBGLED_xxx(0 /*Duration*/, 2 /*Traversal_Number*/, CRGB::Green);
-      }
-      break;
-    case /* constant-expression */ ObstacleAvoidance_mode:
-      /* code */
-      {
-        AppRBG_LED.DeviceDriverSet_RBGLED_xxx(0 /*Duration*/, 2 /*Traversal_Number*/, CRGB::Yellow);
-      }
-      break;
-    case /* constant-expression */ Follow_mode:
-      /* code */
-      {
-        AppRBG_LED.DeviceDriverSet_RBGLED_xxx(0 /*Duration*/, 2 /*Traversal_Number*/, CRGB::Blue);
-      }
-      break;
-    case /* constant-expression */ Rocker_mode:
-      /* code */
-      {
-        AppRBG_LED.DeviceDriverSet_RBGLED_xxx(0 /*Duration*/, 2 /*Traversal_Number*/, CRGB::Violet);
-      }
-      break;
-    default:
-      break;
-    }
+  // Throttle updates to every 200ms
+  if (millis() - lastUpdate < 200) return;
+  lastUpdate = millis();
+  blinkState = !blinkState;
+
+  // Low battery warning - blink red
+  if (VoltageDetectionStatus == true)
+  {
+    if (blinkState)
+      AppRBG_LED.DeviceDriverSet_RBGLED_Color(0, 255, 0, 0); // Red
+    else
+      AppRBG_LED.DeviceDriverSet_RBGLED_Color(0, 0, 0, 0);   // Off
+    return;
+  }
+
+  // Status by mode
+  switch (Application_SmartRobotCarxxx0.Functional_Mode)
+  {
+  case Standby_mode:
+    AppRBG_LED.DeviceDriverSet_RBGLED_Color(0, 0, 255, 0);   // Green = ready
+    break;
+  case TraceBased_mode:
+    AppRBG_LED.DeviceDriverSet_RBGLED_Color(0, 255, 255, 0); // Yellow = line tracking
+    break;
+  case ObstacleAvoidance_mode:
+    AppRBG_LED.DeviceDriverSet_RBGLED_Color(0, 255, 128, 0); // Orange = obstacle avoidance
+    break;
+  default:
+    AppRBG_LED.DeviceDriverSet_RBGLED_Color(0, 0, 0, 255);   // Blue = active/other
+    break;
   }
 }
 
