@@ -277,24 +277,55 @@ void DeviceDriverSet_ULTRASONIC::DeviceDriverSet_ULTRASONIC_Init(void)
 }
 void DeviceDriverSet_ULTRASONIC::DeviceDriverSet_ULTRASONIC_Get(uint16_t *ULTRASONIC_Get /*out*/)
 {
-  unsigned int tempda_x = 0;
-  digitalWrite(TRIG_PIN, LOW);
-  delayMicroseconds(2);
-  digitalWrite(TRIG_PIN, HIGH);
-  delayMicroseconds(10);
-  digitalWrite(TRIG_PIN, LOW);
-  tempda_x = ((unsigned int)pulseIn(ECHO_PIN, HIGH) / 58);
-  // *ULTRASONIC_Get = tempda_x;
+  // Take 5 samples, discard outliers, use median for stability
+  const uint8_t SAMPLES = 5;
+  unsigned int readings[SAMPLES];
+  uint8_t validCount = 0;
 
-  if (tempda_x > 150)
+  for (uint8_t i = 0; i < SAMPLES; i++)
   {
-    *ULTRASONIC_Get = 150;
+    digitalWrite(TRIG_PIN, LOW);
+    delayMicroseconds(2);
+    digitalWrite(TRIG_PIN, HIGH);
+    delayMicroseconds(10);
+    digitalWrite(TRIG_PIN, LOW);
+
+    unsigned long duration = pulseIn(ECHO_PIN, HIGH, 25000); // 25ms timeout (~4.25m max)
+
+    if (duration > 0) // Valid reading
+    {
+      unsigned int dist = duration / 58;
+      if (dist > 0 && dist <= 150) // Within usable range
+      {
+        readings[validCount++] = dist;
+      }
+    }
+    delay(15); // HC-SR04 needs ~10ms between pings
   }
-  else
+
+  // If no valid readings, return 0 (out of range)
+  if (validCount == 0)
   {
-    *ULTRASONIC_Get = tempda_x;
+    *ULTRASONIC_Get = 0;
+    return;
   }
-  // sonar.ping() / US_ROUNDTRIP_CM; // Send ping, get ping time in microseconds (uS).
+
+  // Sort valid readings (bubble sort - small array)
+  for (uint8_t i = 0; i < validCount - 1; i++)
+  {
+    for (uint8_t j = 0; j < validCount - i - 1; j++)
+    {
+      if (readings[j] > readings[j + 1])
+      {
+        unsigned int t = readings[j];
+        readings[j] = readings[j + 1];
+        readings[j + 1] = t;
+      }
+    }
+  }
+
+  // Return median of valid readings
+  *ULTRASONIC_Get = readings[validCount / 2];
 }
 
 #if _Test_DeviceDriverSet

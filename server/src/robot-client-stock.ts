@@ -106,16 +106,18 @@ export class StockRobotClient extends EventEmitter {
 
   /**
    * Queue a command for execution. Only one command runs at a time.
-   * Commands are rejected if disconnected.
+   * Waits for reconnection if disconnected (up to timeout).
    */
   private async queueCommand<T>(fn: () => Promise<T>): Promise<T> {
-    return new Promise((resolve, reject) => {
-      // Reject immediately if we're reconnecting
-      if (this.isReconnecting) {
-        reject(new Error("Connection lost - reconnecting..."));
-        return;
+    // If reconnecting, wait for it to complete (up to 5 seconds)
+    if (this.isReconnecting) {
+      const reconnectWait = await this.waitForReconnect(5000);
+      if (!reconnectWait) {
+        throw new Error("Connection lost - reconnection timed out");
       }
+    }
 
+    return new Promise((resolve, reject) => {
       const command: QueuedCommand = {
         execute: async () => {
           try {
@@ -135,15 +137,60 @@ export class StockRobotClient extends EventEmitter {
   }
 
   /**
+   * Wait for reconnection to complete
+   */
+  private waitForReconnect(timeoutMs: number): Promise<boolean> {
+    return new Promise((resolve) => {
+      if (!this.isReconnecting && this.status.connected) {
+        resolve(true);
+        return;
+      }
+
+      const checkInterval = setInterval(() => {
+        if (!this.isReconnecting && this.status.connected) {
+          clearInterval(checkInterval);
+          clearTimeout(timeout);
+          resolve(true);
+        }
+      }, 100);
+
+      const timeout = setTimeout(() => {
+        clearInterval(checkInterval);
+        resolve(false);
+      }, timeoutMs);
+    });
+  }
+
+  /**
    * Process queued commands one at a time
    */
   private async processQueue(): Promise<void> {
-    if (this.isProcessingQueue || this.isReconnecting) return;
+    if (this.isProcessingQueue) return;
     if (this.commandQueue.length === 0) return;
+
+    // If reconnecting, wait before processing
+    if (this.isReconnecting) {
+      const reconnected = await this.waitForReconnect(5000);
+      if (!reconnected) {
+        // Timeout - reject remaining commands
+        this.rejectQueuedCommands("Reconnection timed out");
+        return;
+      }
+    }
 
     this.isProcessingQueue = true;
 
-    while (this.commandQueue.length > 0 && !this.isReconnecting) {
+    while (this.commandQueue.length > 0) {
+      // Check if we lost connection mid-queue
+      if (this.isReconnecting) {
+        const reconnected = await this.waitForReconnect(5000);
+        if (!reconnected) {
+          this.isProcessingQueue = false;
+          this.rejectQueuedCommands("Reconnection timed out");
+          return;
+        }
+      }
+
       const command = this.commandQueue.shift();
       if (!command) continue;
 
@@ -173,6 +220,13 @@ export class StockRobotClient extends EventEmitter {
 
   async connect(): Promise<void> {
     return new Promise((resolve, reject) => {
+      // Clean up any existing socket before creating a new one
+      if (this.socket) {
+        this.socket.removeAllListeners();
+        this.socket.destroy();
+        this.socket = null;
+      }
+
       this.socket = new net.Socket();
 
       const timeout = setTimeout(() => {
@@ -205,9 +259,13 @@ export class StockRobotClient extends EventEmitter {
       });
 
       this.socket.on("close", () => {
-        this.status.connected = false;
-        this.emit("disconnected");
-        this.startReconnect();
+        // Only trigger reconnect if we were actually connected
+        // (avoids spurious reconnects from destroyed sockets during reconnection)
+        if (this.status.connected) {
+          this.status.connected = false;
+          this.emit("disconnected");
+          this.startReconnect();
+        }
       });
 
       this.socket.on("error", (err) => {
@@ -271,14 +329,15 @@ export class StockRobotClient extends EventEmitter {
     if (this.isReconnecting) return;
 
     this.isReconnecting = true;
+    console.error("Connection lost, starting reconnection...");
 
     // Stop heartbeat when disconnected
     this.stopHeartbeat();
 
-    // Reject any queued commands - they can't complete without connection
-    this.rejectQueuedCommands("Connection lost - reconnecting...");
+    // Don't reject queued commands immediately - let them wait for reconnection
 
-    this.reconnectInterval = setInterval(async () => {
+    // Helper to attempt reconnection
+    const attemptReconnect = async () => {
       console.error("Attempting to reconnect to robot...");
       try {
         // Temporarily clear reconnecting flag to allow connect()
@@ -292,11 +351,19 @@ export class StockRobotClient extends EventEmitter {
         }
         console.error("Reconnection successful");
         this.emit("reconnected");
+        return true;
       } catch {
         // Failed - set flag back and retry
         this.isReconnecting = true;
+        return false;
       }
-    }, 5000);
+    };
+
+    // Try to reconnect immediately
+    attemptReconnect();
+
+    // Then retry every 2 seconds if still disconnected
+    this.reconnectInterval = setInterval(attemptReconnect, 2000);
   }
 
   private startHeartbeat(): void {
@@ -580,26 +647,66 @@ export class StockRobotClient extends EventEmitter {
 
     return this.queueCommand(async () => {
       try {
-        // N=21: Ultrasonic sensor
-        // D1=1 returns obstacle detection (true/false) - WORKING
-        // D1=2 should return distance in cm - but seems broken on this firmware
-        const response = await this.sendCommandAndWait(CMD.ULTRASONIC, 1, undefined, undefined, undefined, 500);
+        // Try D1=2 first (numeric distance in cm) - supported by SmartCarModified firmware
+        let response = await this.sendCommandAndWait(CMD.ULTRASONIC, 2, undefined, undefined, undefined, 500);
 
-        // Parse obstacle detection response - format is {1_true} or {1_false}
-        const hasObstacle = response.includes("true");
+        // Parse numeric response - format is {1:XX} or {1_XX} where XX is distance in cm
+        let distanceMatch = response.match(/\{1[_:](\d+)\}/);
+        if (distanceMatch) {
+          let distance = parseInt(distanceMatch[1], 10);
 
-        // Return estimated distance based on obstacle detection
-        // true = obstacle close (estimate 15cm), false = clear (estimate 100cm)
-        const estimatedDistance = hasObstacle ? 15 : 100;
-        this.lastDistance = estimatedDistance;
+          // Smooth out wild jumps - if reading changes by >40cm and we had a valid previous reading,
+          // blend with previous value (exponential smoothing)
+          if (this.lastDistance > 0 && this.lastDistance < 150) {
+            const delta = Math.abs(distance - this.lastDistance);
+            if (delta > 40 && distance > 0) {
+              // Large jump - use weighted average (70% new, 30% old)
+              distance = Math.round(distance * 0.7 + this.lastDistance * 0.3);
+            }
+          }
 
+          this.lastDistance = distance;
+          return {
+            success: true,
+            cmd: "get_distance",
+            data: {
+              distance: distance,
+              obstacleDetected: distance > 0 && distance < 20,
+              note: distance === 0 ? "Out of range" :
+                    distance < 20 ? "Obstacle close" : "Path clear"
+            }
+          } as RobotResponse;
+        }
+
+        // Fallback to D1=1 (boolean mode) - works on stock firmware
+        if (response === "timeout") {
+          console.error("D1=2 timed out, falling back to D1=1 (boolean mode)");
+          response = await this.sendCommandAndWait(CMD.ULTRASONIC, 1, undefined, undefined, undefined, 500);
+
+          const hasObstacle = response.includes("true");
+          const estimatedDistance = hasObstacle ? 15 : 100;
+          this.lastDistance = estimatedDistance;
+
+          return {
+            success: true,
+            cmd: "get_distance",
+            data: {
+              distance: estimatedDistance,
+              obstacleDetected: hasObstacle,
+              note: hasObstacle ? "Obstacle detected (estimated 15cm)" : "Path clear (estimated 100cm)",
+              mode: "boolean_fallback"
+            }
+          } as RobotResponse;
+        }
+
+        // Unknown response format
         return {
           success: true,
           cmd: "get_distance",
           data: {
-            distance: estimatedDistance,
-            obstacleDetected: hasObstacle,
-            note: hasObstacle ? "Obstacle detected (close)" : "Path clear"
+            distance: this.lastDistance,
+            obstacleDetected: false,
+            note: `Unexpected response format: ${response}`
           }
         } as RobotResponse;
       } catch (error) {
@@ -612,14 +719,17 @@ export class StockRobotClient extends EventEmitter {
     });
   }
 
-  // Check if obstacle is detected (more reliable than distance)
+  // Check if obstacle is detected using actual distance reading
   async hasObstacle(): Promise<boolean> {
     if (!this.status.connected) return false;
 
-    return this.queueCommand(async () => {
-      const response = await this.sendCommandAndWait(CMD.ULTRASONIC, 1, undefined, undefined, undefined, 500);
-      return response.includes("true");
-    });
+    const result = await this.getDistance();
+    if (result.success && result.data) {
+      const distance = (result.data as { distance: number }).distance;
+      // Obstacle if distance > 0 (valid reading) and < 20cm
+      return distance > 0 && distance < 20;
+    }
+    return false;
   }
 
   // Get last known distance without sending command
