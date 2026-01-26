@@ -15,9 +15,12 @@ Basic robot control via MCP:
 ## Phase 1: Stability & Sensors
 
 ### Fix Ultrasonic Sensor
-- [ ] Investigate Elegoo app traffic to see how it reads distance
-- [ ] Try alternative command parameters (D1=2, etc.)
-- [ ] Consider adding external ultrasonic sensor via Arduino GPIO if firmware can't be fixed
+**Root cause identified** - firmware works correctly, MCP parsing is wrong.
+
+- [ ] Update `robot-client-stock.ts` `getDistance()` to send D1=2 (distance mode) instead of D1=1 (boolean mode)
+- [ ] Parse numeric response from `{1_XXX}` format where XXX is distance in cm
+- [ ] Update `sensors.ts` to return actual cm values instead of estimates
+- [ ] Note: Firmware caps readings at 150cm max, threshold for obstacle is 20cm
 
 ### Improve Connection Reliability
 - [ ] Capture and analyze Elegoo app protocol (Wireshark/packet capture)
@@ -107,12 +110,21 @@ If we get USB programming working (external UART adapter):
 - [ ] OTA update support
 
 ### Arduino Firmware Enhancements
-The Arduino (Mega/Uno) connected via serial could be modified:
+The Arduino (Uno) connected via serial can be modified. **Custom firmware base created (2025-01-26).**
 
+**Completed:**
+- [x] Created modifiable copy at `firmware/arduino/SmartCarModified/`
+- [x] Consolidated all pin definitions into `pins.h` with documentation
+- [x] Consolidated all constants/thresholds into `config.h`
+- [x] Added Makefile for easy compile/flash (`make flash-modified`, `make flash-stock`)
+- [x] Verified compiles and runs identically to stock
+
+**Future enhancements:**
 - [ ] Add encoder reading commands
 - [ ] Expose raw sensor values
 - [ ] Add PID motor control
 - [ ] Battery voltage monitoring
+- [ ] Custom serial commands for MCP
 
 ---
 

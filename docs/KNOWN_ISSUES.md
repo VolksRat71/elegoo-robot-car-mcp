@@ -29,22 +29,45 @@ The ESP32-S3 module running Elegoo's stock firmware handles the WiFi/TCP server.
 
 ## Ultrasonic Sensor
 
-### Distance Readings Always Return 0 or Boolean
-**Status**: Unresolved
+### MCP Returns Estimated Distance Instead of Actual Readings
+**Status**: Root cause identified, fix pending
 
-The ultrasonic sensor (N=21 command) does not return actual distance values in centimeters. Instead:
-- With D1=1: Returns `{1_true}` or `{1_false}` for obstacle detection
-- With D1=2: Should return distance but returns `{1_0}` or similar
+**Investigation findings (2025-01-26):**
+The Arduino firmware *correctly* reads and returns actual distance values. The issue is in the MCP server's response parsing.
 
-**Workaround:**
-The `get_distance` tool returns estimated values based on boolean obstacle detection:
+**How it actually works:**
+- Command N=21 with D1=1: Returns `{1_true}` or `{1_false}` (obstacle within 20cm threshold)
+- Command N=21 with D1=2: Returns `{1_XXX}` where XXX is actual distance in cm (0-150)
+
+**Firmware implementation** (`ApplicationFunctionSet_xxx0.cpp:1517-1544`):
+```cpp
+void ApplicationFunctionSet::CMD_UltrasoundModuleStatus_xxx0(uint8_t is_get)
+{
+  AppULTRASONIC.DeviceDriverSet_ULTRASONIC_Get(&UltrasoundData_cm);
+  UltrasoundDetectionStatus = function_xxx(UltrasoundData_cm, 0, ObstacleDetection);
+
+  if (is_get == 1) {  // Boolean obstacle mode
+    Serial.print('{' + CommandSerialNumber + (UltrasoundDetectionStatus ? "_true}" : "_false}"));
+  }
+  else if (is_get == 2) {  // Actual distance mode
+    char toString[10];
+    sprintf(toString, "%d", UltrasoundData_cm);
+    Serial.print('{' + CommandSerialNumber + '_' + toString + '}');
+  }
+}
+```
+
+**The actual bug:**
+The MCP server's `getDistance()` in `robot-client-stock.ts` sends D1=1 (boolean mode) and then estimates distance based on true/false. It should send D1=2 and parse the numeric response.
+
+**Current workaround:**
 - `true` (obstacle detected) → reports 15cm
 - `false` (clear) → reports 100cm
 
-**Possible causes:**
-- Firmware bug in stock Elegoo firmware
-- Different sensor model than expected
-- Command parameters incorrect
+**Fix required:**
+1. Change `getDistance()` to send D1=2 instead of D1=1
+2. Parse the numeric response from `{1_XXX}` format
+3. Note: Firmware caps readings at 150cm max
 
 **Files affected:**
 - `server/src/robot-client-stock.ts` - `getDistance()`, `hasObstacle()`
