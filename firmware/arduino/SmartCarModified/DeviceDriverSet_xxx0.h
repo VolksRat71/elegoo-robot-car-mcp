@@ -129,20 +129,4 @@ public:
 #endif
 };
 
-// ============================================================================
-// IR Receiver (38kHz Remote Control)
-// ============================================================================
-#include "IRremote.h"
-
-class DeviceDriverSet_IRrecv
-{
-public:
-    void DeviceDriverSet_IRrecv_Init(void);
-    bool DeviceDriverSet_IRrecv_Get(uint8_t *IRrecv_Get /*out*/);
-    void DeviceDriverSet_IRrecv_Test(void);
-
-public:
-    unsigned long IR_PreMillis;
-};
-
 #endif // _DeviceDriverSet_xxx0_H_

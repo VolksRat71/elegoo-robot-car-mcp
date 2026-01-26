@@ -15,19 +15,13 @@ class ApplicationFunctionSet
 {
 public:
   void ApplicationFunctionSet_Init(void);
-  void ApplicationFunctionSet_Bootup(void);
   void ApplicationFunctionSet_RGB(void);
-  void ApplicationFunctionSet_Expression(void);
-  void ApplicationFunctionSet_Rocker(void);             //APP Rocker Control
   void ApplicationFunctionSet_Tracking(void);           //Line Tracking Mode
   void ApplicationFunctionSet_Obstacle(void);           //Obstacle Avoidance
-  void ApplicationFunctionSet_Follow(void);             //Following Mode
   void ApplicationFunctionSet_Servo(uint8_t Set_Servo); //Servo Control
   void ApplicationFunctionSet_Standby(void);            //Standby Mode
-  void ApplicationFunctionSet_KeyCommand(void);         //Mode Switch Button
   void ApplicationFunctionSet_SensorDataUpdate(void);   //Sensor Data Update
   void ApplicationFunctionSet_SerialPortDataAnalysis(void);
-  void ApplicationFunctionSet_IRrecv(void);
 
 public: /*CMD*/
   void CMD_UltrasoundModuleStatus_xxx0(uint8_t is_get);
@@ -45,10 +39,6 @@ public: /*CMD*/
   void CMD_MotorControlSpeed_xxx0(uint8_t is_Speed_L, uint8_t is_Speed_R);
   void CMD_ServoControl_xxx0(void);
   void CMD_VoiceControl_xxx0(uint16_t is_VoiceName, uint32_t is_VoiceTimer);
-  void CMD_LightingControlTimeLimit_xxx0(void);
-  void CMD_LightingControlTimeLimit_xxx0(uint8_t is_LightingSequence, uint8_t is_LightingColorValue_R, uint8_t is_LightingColorValue_G, uint8_t is_LightingColorValue_B, uint32_t is_LightingTimer);
-  void CMD_LightingControlNoTimeLimit_xxx0(void);
-  void CMD_LightingControlNoTimeLimit_xxx0(uint8_t is_LightingSequence, uint8_t is_LightingColorValue_R, uint8_t is_LightingColorValue_G, uint8_t is_LightingColorValue_B);
   void CMD_LEDCustomExpressionControl_xxx0(void);
   void CMD_ClearAllFunctions_xxx0(void);
   void CMD_LEDNumberDisplayControl_xxx0(uint8_t is_LEDNumber);
