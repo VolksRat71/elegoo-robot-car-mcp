@@ -4,6 +4,20 @@
 
 ---
 
+## Priority List
+
+Ordered by impact and dependency:
+
+| # | Task | Why First |
+|---|------|-----------|
+| 1 | Fix ultrasonic sensor | Blocks all navigation features |
+| 2 | Slim Arduino firmware | Clean foundation, add reactive commands |
+| 3 | Build server navigation module | Occupancy grid, A*, behaviors |
+| 4 | High-level MCP tools | `explore_area()`, `navigate_to()` |
+| 5 | Refinement | Performance, reliability, polish |
+
+---
+
 ## Current State (v1.0)
 
 ### Working
@@ -33,12 +47,11 @@ Strip Arduino firmware down to navigation essentials.
 ### Remove
 - [ ] IRremote library (~50KB)
 - [ ] MPU6050 library (~85KB)
-- [ ] RGB LED code
+- [ ] LED animations & expressions (keep status only)
 - [ ] Voice control code
 - [ ] Mode button handling
 - [ ] Follow mode
 - [ ] Rocker (joystick) mode
-- [ ] LED expression code
 - [ ] ArduinoJson (use simple parser)
 
 ### Keep
@@ -47,8 +60,10 @@ Strip Arduino firmware down to navigation essentials.
 - [x] Servo (pan)
 - [x] Line sensors (3x IR)
 - [x] Serial command interface
+- [ ] RGB LED (minimal status indicator only)
 
 ### Add
+- [ ] Status LED helper (`setStatusLED(color)`)
 - [ ] `CMD_DriveUntilObstacle(speed, threshold_cm)`
 - [ ] `CMD_ScanArc(start_angle, end_angle, step)`
 - [ ] `CMD_FollowWall(side, speed, duration_ms)`

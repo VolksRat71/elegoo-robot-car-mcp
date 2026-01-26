@@ -109,11 +109,11 @@ The Arduino is "dumb but fast":
 |-----------|------|--------|
 | IRremote.* | ~50KB | No remote control needed |
 | MPU6050.* | ~85KB | Complex, unreliable, server handles heading |
-| RGB LED code | ~300 lines | Visual feedback unnecessary |
 | Voice control | ~200 lines | Unnecessary |
 | Mode button | ~100 lines | Server controls modes |
 | Follow mode | ~150 lines | Server handles this behavior |
 | Rocker mode | ~100 lines | No joystick control |
+| LED animations | ~200 lines | Keep only status indicator |
 | LED expressions | ~200 lines | Unnecessary |
 | ArduinoJson | ~176KB | Use simple parser |
 
@@ -128,6 +128,26 @@ The Arduino is "dumb but fast":
 | Servo (pan only) | Rotate sensor head |
 | Line sensors (3x IR) | Wall/edge detection |
 | Serial protocol | Command interface |
+| RGB LED (minimal) | Status indicator only |
+
+### Status LED (Minimal Implementation)
+
+Keep FastLED but strip down to simple status colors:
+
+```cpp
+// Status colors in config.h
+#define LED_COLOR_BOOT      CRGB::Blue     // Initializing
+#define LED_COLOR_READY     CRGB::Green    // Connected, idle
+#define LED_COLOR_ACTIVE    CRGB::Cyan     // Executing command
+#define LED_COLOR_ERROR     CRGB::Red      // Fault/disconnected
+#define LED_COLOR_LOW_BATT  CRGB::Orange   // Battery warning
+
+// Simple helper function (~10 lines)
+void setStatusLED(CRGB color) {
+    leds[0] = color;
+    FastLED.show();
+}
+```
 
 ### Components to ADD
 
