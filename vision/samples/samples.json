@@ -147,6 +147,40 @@
       ],
       "screenshot": "06_blocked_far_full.png",
       "notes": "6in foam pad at ~3ft ahead. CENTER zone only 18% (header 10%), barely above baseline 14%. At this distance, small obstacles are NOT reliably detected by depth alone."
+    },
+    {
+      "id": 7,
+      "label": "passage_narrow",
+      "description": "Narrow passage with obstacles on both sides (box left, foam pad right, ~1ft from robot each)",
+      "expected_action": "proceed_carefully_center",
+      "depth_zones": {
+        "left": 41,
+        "center": 16,
+        "right": 44
+      },
+      "center_depth_pct": 6,
+      "safety_pct": 20,
+      "front_distance_mm": 0,
+      "detected_objects": [],
+      "screenshot": "07_passage_narrow_full.png",
+      "notes": "Box on left, foam pad on right, each ~1ft away. LEFT jumped to 41% (+17%), RIGHT to 44% (+19%), CENTER stays at 16% (clear). Signature pattern for hallway/corridor."
+    },
+    {
+      "id": 8,
+      "label": "wall",
+      "description": "Large flat surface (white wall) approximately 1ft directly ahead, perpendicular",
+      "expected_action": "stop",
+      "depth_zones": {
+        "left": 44,
+        "center": 45,
+        "right": 46
+      },
+      "center_depth_pct": 43,
+      "safety_pct": 20,
+      "front_distance_mm": 0,
+      "detected_objects": [],
+      "screenshot": "08_wall_full.png",
+      "notes": "Pure white wall at 1ft, perpendicular. All zones uniformly elevated (~44-46%), signature pattern for wall/large flat surface. Depth estimation works reliably on textureless surfaces."
     }
   ]
 }
