@@ -129,6 +129,21 @@ Analyze an image for depth and object detection.
 The Node.js MCP server calls this service via HTTP when `observe({mode: "burst"})` is called.
 Results populate `WorldState.semantics.detected_objects` and derive place tags.
 
+## Performance
+
+### Inference Speed (after warmup)
+
+| Model | CPU (M1 Mac) | CPU (Intel) | GPU |
+|-------|--------------|-------------|-----|
+| MiDaS_small | ~100-200ms | ~200-400ms | ~30-50ms |
+| YOLOv8n | ~50-100ms | ~100-200ms | ~10-20ms |
+| **Combined** | **~150-300ms** | **~300-600ms** | **~40-70ms** |
+
+### Warmup
+
+On startup, the service runs a dummy inference through both models to prime PyTorch's JIT compiler.
+This ensures the first real inference is fast.
+
 ## First Run
 
 On first run, the models will be downloaded automatically:
@@ -136,3 +151,19 @@ On first run, the models will be downloaded automatically:
 - YOLOv8n: ~6MB from Ultralytics
 
 This may take a few minutes on first startup.
+
+## Troubleshooting
+
+### Service won't start
+- Check Python version: `python3 --version` (requires 3.8+)
+- Ensure venv is activated: `source venv/bin/activate`
+- Check port availability: `lsof -i :8765`
+
+### Slow inference
+- First inference after startup is slower (JIT compilation)
+- Warmup should handle this automatically
+- Consider GPU if available: install `torch` with CUDA support
+
+### Memory issues
+- MiDaS_small + YOLOv8n require ~1-2GB RAM
+- For lower memory, models could be loaded on-demand (not implemented)
