@@ -1,0 +1,78 @@
+{
+  "samples": [
+    {
+      "id": 1,
+      "label": "clear",
+      "description": "No obstacles in view, open path ahead",
+      "expected_action": "proceed_forward",
+      "depth_zones": {
+        "left": 24,
+        "center": 14,
+        "right": 25
+      },
+      "center_depth_pct": 2,
+      "safety_pct": 20,
+      "front_distance_mm": 0,
+      "detected_objects": [
+        {
+          "label": "Couch",
+          "confidence": 29,
+          "bearing_deg": -19
+        }
+      ],
+      "screenshot": "01_clear_full.png",
+      "notes": "CONFIRMED CLEAR - 7ft 4in ahead, 2ft 6in on each side. Couch detection is false positive or distant object."
+    },
+    {
+      "id": 2,
+      "label": "blocked_center",
+      "description": "Obstacle directly ahead (6in foam pad at 1ft distance)",
+      "expected_action": "stop",
+      "depth_zones": {
+        "left": 22,
+        "center": 42,
+        "right": 21
+      },
+      "center_depth_pct": 66,
+      "safety_pct": 20,
+      "front_distance_mm": 0,
+      "detected_objects": [
+        {
+          "label": "Tv",
+          "confidence": 73,
+          "bearing_deg": 19
+        },
+        {
+          "label": "Couch",
+          "confidence": 35,
+          "bearing_deg": -19
+        }
+      ],
+      "screenshot": "02_blocked_center_full.png",
+      "notes": "6in diameter foam pad placed 1ft directly ahead. CENTER zone jumped from 14% to 42%. Header CENTER jumped from 2% to 66%."
+    },
+    {
+      "id": 3,
+      "label": "blocked_right",
+      "description": "Obstacle on right side (6in foam pad at 1ft ahead, 1ft to right)",
+      "expected_action": "turn_left",
+      "depth_zones": {
+        "left": 25,
+        "center": 14,
+        "right": 46
+      },
+      "center_depth_pct": 4,
+      "safety_pct": 20,
+      "front_distance_mm": 0,
+      "detected_objects": [
+        {
+          "label": "Bed",
+          "confidence": 49,
+          "bearing_deg": -19
+        }
+      ],
+      "screenshot": "03_blocked_right_full.png",
+      "notes": "6in foam pad at ~45deg angle (1ft ahead, 1ft right). RIGHT zone jumped from 25% to 46%. LEFT and CENTER unchanged."
+    }
+  ]
+}
