@@ -1,19 +1,28 @@
 """
-Vision Service for Elegoo Robot Car MCP
-Provides MiDaS depth estimation and YOLOv8 object detection via HTTP API.
+Vision & Robot Command Service for Elegoo Robot Car MCP
+
+Provides:
+- MiDaS depth estimation and YOLOv8 object detection via HTTP API
+- Centralized robot command dispatcher (all robot commands go through here)
+
+This is the SINGLE point of communication with the robot.
+Node MCP server calls these endpoints instead of direct TCP.
 """
 import base64
 import io
 import logging
 import os
 from contextlib import asynccontextmanager
-from typing import Optional
+from typing import Optional, Literal
 
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
 from PIL import Image
+import cv2
+import numpy as np
 
 from models import DepthEstimator, ObjectDetector
+from robot_client import RobotClient, CameraStream, get_robot, get_camera
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -60,6 +69,28 @@ async def lifespan(app: FastAPI):
     """Load models at startup, cleanup at shutdown."""
     global depth_estimator, object_detector
 
+    # Initialize robot client
+    robot_host = os.environ.get("ROBOT_HOST", "192.168.4.1")
+    robot_port = int(os.environ.get("ROBOT_PORT", "100"))
+    camera_url = os.environ.get("CAMERA_URL", f"http://{robot_host}:81/stream")
+
+    logger.info(f"Robot host: {robot_host}:{robot_port}")
+    logger.info(f"Camera URL: {camera_url}")
+
+    # Get singleton instances (they'll be initialized with these settings)
+    robot = RobotClient.get_instance(robot_host, robot_port)
+    camera = CameraStream.get_instance(camera_url)
+
+    # Try to connect to robot (non-blocking, will reconnect on first command if needed)
+    if robot.connect():
+        logger.info("Robot connected!")
+    else:
+        logger.warning("Robot not connected - will retry on first command")
+
+    # Start camera stream in background
+    camera.start()
+
+    # Load vision models
     logger.info("Loading vision models...")
 
     # Load MiDaS (small model for speed)
@@ -77,8 +108,12 @@ async def lifespan(app: FastAPI):
 
     yield
 
-    # Cleanup (if needed)
-    logger.info("Shutting down vision service...")
+    # Cleanup
+    logger.info("Shutting down...")
+    camera.stop()
+    robot.stop()
+    robot.disconnect()
+    logger.info("Shutdown complete.")
 
 
 app = FastAPI(
@@ -174,6 +209,186 @@ async def analyze_image(request: AnalyzeRequest):
     except Exception as e:
         logger.error(f"Error analyzing image: {e}")
         return AnalyzeResponse(success=False, error=str(e))
+
+
+# === Robot Command Endpoints ===
+# All robot communication goes through these endpoints.
+# Node MCP server calls these instead of direct TCP.
+
+
+class DriveRequest(BaseModel):
+    """Request body for /robot/drive endpoint."""
+    direction: Literal["forward", "backward", "left", "right", "stop"]
+    speed: int = 50  # 0-100
+    duration_ms: int = 0  # 0 = no auto-stop
+
+
+class TurnRequest(BaseModel):
+    """Request body for /robot/turn endpoint."""
+    degrees: int  # Positive = clockwise, negative = counter-clockwise
+    speed: int = 50
+
+
+class LookRequest(BaseModel):
+    """Request body for /robot/look endpoint."""
+    angle: int  # 0-180, 90 = center
+
+
+class LedRequest(BaseModel):
+    """Request body for /robot/led endpoint."""
+    r: int = 0
+    g: int = 0
+    b: int = 0
+    led: int = 0  # 0 = all LEDs
+
+
+class RawCommandRequest(BaseModel):
+    """Request body for /robot/raw endpoint (advanced use)."""
+    n: int  # Command number
+    d1: int = 0
+    d2: int = 0
+    d3: int = 0
+    d4: int = 0
+
+
+@app.post("/robot/drive")
+async def robot_drive(request: DriveRequest):
+    """Drive the robot in a direction."""
+    robot = get_robot()
+    return robot.drive(request.direction, request.speed, request.duration_ms)
+
+
+@app.post("/robot/turn")
+async def robot_turn(request: TurnRequest):
+    """Turn the robot in place."""
+    robot = get_robot()
+    return robot.turn(request.degrees, request.speed)
+
+
+@app.post("/robot/stop")
+async def robot_stop():
+    """Emergency stop all motors."""
+    robot = get_robot()
+    return robot.stop()
+
+
+@app.post("/robot/look")
+async def robot_look(request: LookRequest):
+    """Set camera pan servo angle."""
+    robot = get_robot()
+    return robot.look(request.angle)
+
+
+@app.get("/robot/distance")
+async def robot_distance():
+    """Read ultrasonic distance sensor."""
+    robot = get_robot()
+    return robot.get_distance()
+
+
+@app.get("/robot/ping")
+async def robot_ping():
+    """Ping robot to check connection."""
+    robot = get_robot()
+    return robot.ping()
+
+
+@app.get("/robot/metrics")
+async def robot_metrics():
+    """Get connection metrics."""
+    robot = get_robot()
+    return robot.get_metrics()
+
+
+@app.post("/robot/led")
+async def robot_led(request: LedRequest):
+    """Set LED color."""
+    robot = get_robot()
+    return robot.set_led(request.r, request.g, request.b, request.led)
+
+
+@app.post("/robot/raw")
+async def robot_raw(request: RawCommandRequest):
+    """Send raw command to robot (advanced use)."""
+    robot = get_robot()
+    success, latency, response = robot.send_raw(
+        request.n, request.d1, request.d2, request.d3, request.d4
+    )
+    return {
+        "success": success,
+        "latency_ms": round(latency, 1),
+        "response": response,
+    }
+
+
+# === Camera Endpoints ===
+
+
+@app.get("/camera/capture")
+async def camera_capture():
+    """Capture current frame from camera stream as base64 JPEG."""
+    camera = get_camera()
+    frame = camera.get_frame()
+
+    if frame is None:
+        raise HTTPException(status_code=503, detail="No camera frame available")
+
+    # Encode frame as JPEG
+    _, buffer = cv2.imencode('.jpg', frame, [cv2.IMWRITE_JPEG_QUALITY, 85])
+    image_base64 = base64.b64encode(buffer).decode('utf-8')
+
+    return {
+        "success": True,
+        "image_base64": image_base64,
+        "frame_age_ms": round(camera.get_frame_age_ms(), 1),
+        "width": frame.shape[1],
+        "height": frame.shape[0],
+    }
+
+
+@app.get("/camera/status")
+async def camera_status():
+    """Get camera stream status."""
+    camera = get_camera()
+    return camera.get_status()
+
+
+@app.post("/camera/start")
+async def camera_start():
+    """Start camera stream (if not already running)."""
+    camera = get_camera()
+    success = camera.start()
+    return {"success": success, "status": camera.get_status()}
+
+
+@app.post("/camera/stop")
+async def camera_stop():
+    """Stop camera stream."""
+    camera = get_camera()
+    camera.stop()
+    return {"success": True}
+
+
+# === Combined Status ===
+
+
+@app.get("/status")
+async def full_status():
+    """Get full status of robot, camera, and vision models."""
+    robot = get_robot()
+    camera = get_camera()
+
+    return {
+        "robot": {
+            "connected": robot.is_connected(),
+            "metrics": robot.get_metrics(),
+        },
+        "camera": camera.get_status(),
+        "vision": {
+            "depth_loaded": depth_estimator is not None,
+            "detection_loaded": object_detector is not None,
+        },
+    }
 
 
 if __name__ == "__main__":

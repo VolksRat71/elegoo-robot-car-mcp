@@ -98,6 +98,11 @@ export class StockRobotClient extends EventEmitter {
   private isProcessingQueue = false;
   private isReconnecting = false;
 
+  // ESP32 firmware limitation: can only handle ~4-5 commands per connection
+  // We proactively reconnect every 3 commands to stay reliable
+  private static readonly COMMANDS_PER_CONNECTION = 3;
+  private commandsSinceConnect = 0;
+
   constructor(host: string = "192.168.4.1", port: number = 100) {
     super();
     this.robotHost = host;
@@ -237,6 +242,7 @@ export class StockRobotClient extends EventEmitter {
       this.socket.connect(this.robotPort, this.robotHost, () => {
         clearTimeout(timeout);
         this.status.connected = true;
+        this.commandsSinceConnect = 0; // Reset command counter on new connection
 
         // Enable TCP keepalive to prevent robot from dropping idle connections
         // Sends probe after 1 second of inactivity
@@ -403,7 +409,11 @@ export class StockRobotClient extends EventEmitter {
   }
 
   async ensureConnected(): Promise<void> {
-    if (this.socket && this.status.connected) return;
+    // First check if we need a fresh connection (reconnect-every-3 pattern)
+    if (this.socket && this.status.connected) {
+      await this.ensureFreshConnection();
+      return;
+    }
 
     console.error("Not connected, attempting to reconnect...");
     await this.connect();
@@ -413,6 +423,28 @@ export class StockRobotClient extends EventEmitter {
 
     if (!this.status.connected) {
       throw new Error("Not connected to robot - make sure you're on ELEGOO WiFi");
+    }
+  }
+
+  /**
+   * Proactively reconnect if we've sent too many commands on this connection.
+   * ESP32 firmware can only handle ~4-5 commands per connection reliably.
+   */
+  private async ensureFreshConnection(): Promise<void> {
+    if (this.commandsSinceConnect >= StockRobotClient.COMMANDS_PER_CONNECTION) {
+      console.error(
+        `[Reconnect] Hit ${this.commandsSinceConnect} commands, proactively reconnecting...`
+      );
+      // Close current connection
+      if (this.socket) {
+        this.socket.removeAllListeners();
+        this.socket.destroy();
+        this.socket = null;
+      }
+      this.status.connected = false;
+
+      // Reconnect
+      await this.connect();
     }
   }
 
@@ -437,7 +469,8 @@ export class StockRobotClient extends EventEmitter {
 
     try {
       this.socket.write(message);
-      console.error(`Sent: ${message.trim()}`);
+      this.commandsSinceConnect++; // Track commands for reconnect-every-3
+      console.error(`Sent: ${message.trim()} (cmd ${this.commandsSinceConnect}/${StockRobotClient.COMMANDS_PER_CONNECTION})`);
     } catch (err) {
       // Write failed - connection is broken
       console.error("Socket write failed:", err instanceof Error ? err.message : "Unknown error");

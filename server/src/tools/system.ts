@@ -23,12 +23,17 @@ export async function getStatus(): Promise<string> {
 
     if (response.success && response.data) {
       const data = response.data as {
+        mode?: string;
         battery?: number;
         wifiSignal?: number;
-        mode?: string;
-        uptime?: number;
+        metrics?: { success_rate: number; avg_latency_ms: number };
       };
 
+      if (data.mode) {
+        result += `  Mode: ${data.mode}\n`;
+      }
+
+      // These fields may be available depending on robot firmware
       if (data.battery !== undefined) {
         const batteryBar = "█".repeat(Math.floor(data.battery / 10));
         const batteryEmpty = "░".repeat(10 - Math.floor(data.battery / 10));
@@ -39,14 +44,10 @@ export async function getStatus(): Promise<string> {
         result += `  WiFi Signal: ${data.wifiSignal} dBm\n`;
       }
 
-      if (data.mode) {
-        result += `  Mode: ${data.mode}\n`;
-      }
-
-      if (data.uptime !== undefined) {
-        const minutes = Math.floor(data.uptime / 60);
-        const seconds = data.uptime % 60;
-        result += `  Uptime: ${minutes}m ${seconds}s\n`;
+      // Show connection metrics if available (proxy mode)
+      if (data.metrics) {
+        result += `  Success Rate: ${data.metrics.success_rate}%\n`;
+        result += `  Avg Latency: ${data.metrics.avg_latency_ms}ms\n`;
       }
     }
   } catch (error) {

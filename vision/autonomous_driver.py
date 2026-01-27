@@ -18,6 +18,7 @@ import json
 import signal
 import socket
 import sys
+import threading
 import time
 from dataclasses import dataclass
 from enum import Enum
@@ -248,23 +249,36 @@ class RobotClient:
             return False, latency_ms
 
     def drive(self, direction: str, speed: int, duration_ms: int) -> bool:
-        """Drive in a direction."""
+        """Drive in a direction using MOTOR_CONTROL (N=1)."""
         # Map speed 0-100 to 0-250
         mapped_speed = int(speed * 2.5)
 
-        # Direction mapping for CMD.CAR_DIRECTION (N=3)
-        dir_map = {"forward": 1, "backward": 2, "left": 3, "right": 4, "stop": 0}
-        dir_code = dir_map.get(direction, 0)
+        # Motor direction: 0=stop, 1=forward, 2=backward
+        MOTOR_STOP = 0
+        MOTOR_FWD = 1
+        MOTOR_BWD = 2
 
-        if dir_code == 0:
+        if direction == "forward":
+            # Both motors forward
+            self.send_command(1, 0, mapped_speed, MOTOR_FWD)
+        elif direction == "backward":
+            # Both motors backward
+            self.send_command(1, 0, mapped_speed, MOTOR_BWD)
+        elif direction == "left":
+            # Right motor forward, left motor backward (turn left while moving)
+            self.send_command(1, 1, mapped_speed, MOTOR_FWD)  # Right forward
+            self.send_command(1, 2, mapped_speed, MOTOR_BWD)  # Left backward
+        elif direction == "right":
+            # Left motor forward, right motor backward (turn right while moving)
+            self.send_command(1, 2, mapped_speed, MOTOR_FWD)  # Left forward
+            self.send_command(1, 1, mapped_speed, MOTOR_BWD)  # Right backward
+        else:
             return self.stop()
 
-        # Send drive command
-        success, _ = self.send_command(3, dir_code, mapped_speed, 0)
-        if success and duration_ms > 0:
+        if duration_ms > 0:
             time.sleep(duration_ms / 1000.0)
             self.stop()
-        return success
+        return True
 
     def turn(self, degrees: int, speed: int) -> bool:
         """Turn in place using differential drive."""
@@ -295,31 +309,132 @@ class RobotClient:
 
 # === Camera Capture ===
 
+class CameraStream:
+    """Persistent MJPEG stream reader with frame caching.
+
+    Keeps the camera stream open and continuously reads frames in background.
+    Control loop can grab the latest frame instantly without HTTP overhead.
+    """
+
+    def __init__(self, url: str):
+        self.url = url
+        self.latest_frame: Optional[np.ndarray] = None
+        self.frame_time: float = 0
+        self.running = False
+        self.thread: Optional[threading.Thread] = None
+        self.lock = threading.Lock()
+        self.error_count = 0
+        self.frame_count = 0
+
+    def start(self) -> bool:
+        """Start the background stream reader."""
+        if self.running:
+            return True
+
+        self.running = True
+        self.thread = threading.Thread(target=self._stream_loop, daemon=True)
+        self.thread.start()
+
+        # Wait up to 3 seconds for first frame
+        for _ in range(30):
+            if self.latest_frame is not None:
+                print(f"[CAMERA] Stream started, first frame received")
+                return True
+            time.sleep(0.1)
+
+        print(f"[CAMERA] Warning: No frame received in 3s, continuing anyway")
+        return True
+
+    def stop(self):
+        """Stop the background stream reader."""
+        self.running = False
+        if self.thread:
+            self.thread.join(timeout=2.0)
+            self.thread = None
+
+    def get_frame(self) -> Optional[np.ndarray]:
+        """Get the latest cached frame (instant, no HTTP call)."""
+        with self.lock:
+            return self.latest_frame.copy() if self.latest_frame is not None else None
+
+    def get_frame_age_ms(self) -> float:
+        """How old is the cached frame in milliseconds."""
+        if self.frame_time == 0:
+            return float('inf')
+        return (time.time() - self.frame_time) * 1000
+
+    def _stream_loop(self):
+        """Background loop that reads frames from MJPEG stream."""
+        while self.running:
+            try:
+                # Open persistent connection to MJPEG stream
+                response = requests.get(self.url, timeout=5.0, stream=True)
+                if response.status_code != 200:
+                    print(f"[CAMERA] Stream returned {response.status_code}")
+                    time.sleep(1.0)
+                    continue
+
+                bytes_data = b''
+                for chunk in response.iter_content(chunk_size=4096):
+                    if not self.running:
+                        break
+
+                    bytes_data += chunk
+
+                    # Look for complete JPEG frame
+                    while True:
+                        start = bytes_data.find(b'\xff\xd8')
+                        end = bytes_data.find(b'\xff\xd9')
+
+                        if start != -1 and end != -1 and end > start:
+                            # Extract JPEG frame
+                            jpg_data = bytes_data[start:end+2]
+                            bytes_data = bytes_data[end+2:]
+
+                            try:
+                                img = Image.open(BytesIO(jpg_data))
+                                frame = np.array(img)
+
+                                with self.lock:
+                                    self.latest_frame = frame
+                                    self.frame_time = time.time()
+                                    self.frame_count += 1
+
+                                self.error_count = 0
+                            except Exception as e:
+                                print(f"[CAMERA] Frame decode error: {e}")
+                        else:
+                            break
+
+                    # Prevent buffer from growing too large
+                    if len(bytes_data) > 200000:
+                        bytes_data = bytes_data[-50000:]
+
+            except Exception as e:
+                self.error_count += 1
+                if self.error_count <= 3:
+                    print(f"[CAMERA] Stream error: {e}")
+                time.sleep(0.5)
+
+        print(f"[CAMERA] Stream stopped after {self.frame_count} frames")
+
+
+# Global camera stream instance
+_camera_stream: Optional[CameraStream] = None
+
+def get_camera_stream(url: str) -> CameraStream:
+    """Get or create the global camera stream."""
+    global _camera_stream
+    if _camera_stream is None:
+        _camera_stream = CameraStream(url)
+    return _camera_stream
+
 def capture_frame(camera_url: str) -> Optional[np.ndarray]:
-    """Capture a single frame from the ESP32 camera stream."""
-    try:
-        # For MJPEG stream, grab one frame
-        response = requests.get(camera_url, timeout=1.0, stream=True)
-        if response.status_code == 200:
-            # Read JPEG boundary
-            bytes_data = b''
-            for chunk in response.iter_content(chunk_size=1024):
-                bytes_data += chunk
-                # Look for JPEG end marker
-                end = bytes_data.find(b'\xff\xd9')
-                if end != -1:
-                    # Find start marker
-                    start = bytes_data.find(b'\xff\xd8')
-                    if start != -1:
-                        jpg_data = bytes_data[start:end+2]
-                        img = Image.open(BytesIO(jpg_data))
-                        return np.array(img)
-                if len(bytes_data) > 100000:  # Safety limit
-                    break
-        return None
-    except Exception as e:
-        print(f"[CAMERA] Capture failed: {e}")
-        return None
+    """Get latest frame from the persistent camera stream."""
+    stream = get_camera_stream(camera_url)
+    if not stream.running:
+        stream.start()
+    return stream.get_frame()
 
 
 # === Decision Engine ===
@@ -460,8 +575,10 @@ def run_driver(duration_s: int, config: Config, dry_run: bool = False):
 
             state.vision_failures = 0
 
-            # Get depth
-            depth_map, zones = depth_estimator.estimate(frame)
+            # Get depth - convert numpy array to PIL Image
+            pil_frame = Image.fromarray(frame)
+            depth_result = depth_estimator.estimate(pil_frame)
+            zones = depth_result["depth_zones"]
             current_depth = DepthZones(
                 left=zones["left"] * 100,
                 center=zones["center"] * 100,
@@ -531,6 +648,12 @@ def run_driver(duration_s: int, config: Config, dry_run: bool = False):
         if robot:
             robot.stop()
             robot.disconnect()
+
+        # Stop camera stream
+        global _camera_stream
+        if _camera_stream:
+            _camera_stream.stop()
+            _camera_stream = None
 
         elapsed = time.time() - state.start_time
         metrics = state.connection_metrics
