@@ -64,6 +64,10 @@ def load_config_json() -> dict:
 
 @dataclass
 class Config:
+    # Mode (for hot-reload)
+    _mode: str = "normal"
+    _last_reload: float = 0.0
+
     # Robot connection
     robot_host: str = "192.168.4.1"
     robot_port: int = 100
@@ -97,6 +101,43 @@ class Config:
     # Safety
     max_consecutive_stops: int = 3
     max_vision_failures: int = 5
+
+    def hot_reload(self) -> bool:
+        """Reload config from JSON if file changed. Returns True if reloaded."""
+        try:
+            mtime = CONFIG_PATH.stat().st_mtime
+            if mtime <= self._last_reload:
+                return False
+
+            data = load_config_json()
+            modes = data.get("driving_modes", {})
+            mode_config = modes.get(self._mode, modes.get("normal", {}))
+
+            # Update tunable values
+            self.cruise_speed = mode_config.get("cruise_speed", self.cruise_speed)
+            self.slow_speed = mode_config.get("slow_speed", self.slow_speed)
+            self.turn_speed = mode_config.get("turn_speed", self.turn_speed)
+            self.drive_duration_ms = mode_config.get("drive_duration_ms", self.drive_duration_ms)
+            self.turn_degrees_small = mode_config.get("turn_degrees_small", self.turn_degrees_small)
+            self.turn_degrees_large = mode_config.get("turn_degrees_large", self.turn_degrees_large)
+            self.clear_threshold = mode_config.get("clear_threshold", self.clear_threshold)
+            self.obstacle_threshold = mode_config.get("obstacle_threshold", self.obstacle_threshold)
+            self.danger_threshold = mode_config.get("danger_threshold", self.danger_threshold)
+            self.wall_variance = mode_config.get("wall_variance", self.wall_variance)
+
+            smoothing = data.get("smoothing", {})
+            self.ema_alpha = smoothing.get("ema_alpha", self.ema_alpha)
+
+            safety = data.get("safety", {})
+            self.max_consecutive_stops = safety.get("max_consecutive_stops", self.max_consecutive_stops)
+            self.max_vision_failures = safety.get("max_vision_failures", self.max_vision_failures)
+
+            self._last_reload = mtime
+            print(f"[CONFIG] Hot-reloaded: obstacle={self.obstacle_threshold}%, drive={self.drive_duration_ms}ms")
+            return True
+        except Exception as e:
+            print(f"[CONFIG] Hot-reload failed: {e}")
+            return False
 
     @classmethod
     def from_json(cls, mode: str = "normal") -> "Config":
@@ -139,6 +180,10 @@ class Config:
         safety = data.get("safety", {})
         config.max_consecutive_stops = safety.get("max_consecutive_stops", config.max_consecutive_stops)
         config.max_vision_failures = safety.get("max_vision_failures", config.max_vision_failures)
+
+        # Store mode for hot-reload
+        config._mode = mode
+        config._last_reload = CONFIG_PATH.stat().st_mtime if CONFIG_PATH.exists() else 0
 
         return config
 
@@ -323,6 +368,9 @@ def run_driver(duration_s: int, config: Config, dry_run: bool = False):
         while state.running and time.time() < end_time:
             loop_start = time.time()
 
+            # Hot-reload config if file changed (tune without restart!)
+            config.hot_reload()
+
             # Capture frame from vision service
             frame = capture_frame(config.vision_service_url)
             if frame is None:
@@ -386,13 +434,8 @@ def run_driver(duration_s: int, config: Config, dry_run: bool = False):
                       f"R:{state.smoothed_depth.right:5.1f}% → {decision.value} "
                       f"({status}){latency_info}")
 
-                # Attempt reconnection on repeated failures
-                if not success and robot.reconnect_attempts < 3:
-                    print("[DRIVER] Command failed, attempting reconnect...")
-                    if robot.reconnect():
-                        print("[DRIVER] Reconnected successfully")
-                    else:
-                        print("[DRIVER] Reconnect failed")
+                # Note: Reconnection is handled automatically by RobotClient's
+                # reconnect-every-3 pattern - no manual reconnect needed here
 
             state.last_decision = decision
 

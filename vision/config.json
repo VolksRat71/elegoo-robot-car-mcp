@@ -21,19 +21,19 @@
       "wall_variance": 10.0
     },
     "cautious": {
-      "cruise_speed": 25,
-      "slow_speed": 18,
-      "turn_speed": 35,
-      "reverse_speed": 25,
+      "cruise_speed": 28,
+      "slow_speed": 20,
+      "turn_speed": 38,
+      "reverse_speed": 28,
       "loop_interval_ms": 300,
-      "drive_duration_ms": 600,
-      "turn_degrees_small": 20,
-      "turn_degrees_large": 45,
-      "reverse_duration_ms": 350,
-      "clear_threshold": 35.0,
-      "obstacle_threshold": 45.0,
-      "danger_threshold": 65.0,
-      "wall_variance": 10.0
+      "drive_duration_ms": 750,
+      "turn_degrees_small": 25,
+      "turn_degrees_large": 55,
+      "reverse_duration_ms": 400,
+      "clear_threshold": 38.0,
+      "obstacle_threshold": 52.0,
+      "danger_threshold": 70.0,
+      "wall_variance": 12.0
     }
   },
 
@@ -42,8 +42,8 @@
   },
 
   "safety": {
-    "max_consecutive_stops": 3,
-    "max_vision_failures": 5
+    "max_consecutive_stops": 5,
+    "max_vision_failures": 8
   },
 
   "connection": {
