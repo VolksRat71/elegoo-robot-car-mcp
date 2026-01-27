@@ -31,6 +31,7 @@ import { navigationTools } from "./tools/navigation.js";
 import { systemTools } from "./tools/system.js";
 import { sequenceTools } from "./tools/sequences.js";
 import { tacticalTools } from "./tools/tactical.js";
+import { autonomyTools } from "./tools/autonomy.js";
 
 // Combine all tools
 const allTools = {
@@ -41,6 +42,7 @@ const allTools = {
   ...systemTools,
   ...sequenceTools,
   ...tacticalTools,
+  ...autonomyTools,
 };
 
 type ToolName = keyof typeof allTools;

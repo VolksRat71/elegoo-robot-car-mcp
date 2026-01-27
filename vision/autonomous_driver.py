@@ -155,44 +155,73 @@ class DriverState:
 class RobotClient:
     """Direct TCP communication with Elegoo robot."""
 
-    def __init__(self, host: str, port: int):
+    def __init__(self, host: str, port: int, metrics: Optional[ConnectionMetrics] = None):
         self.host = host
         self.port = port
         self.socket: Optional[socket.socket] = None
+        self.metrics = metrics
+        self.reconnect_attempts = 0
 
     def connect(self) -> bool:
         try:
             self.socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
             self.socket.settimeout(2.0)
+            # Enable TCP_NODELAY for lower latency
+            self.socket.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
             self.socket.connect((self.host, self.port))
             print(f"[ROBOT] Connected to {self.host}:{self.port}")
+            self.reconnect_attempts = 0
             return True
         except Exception as e:
             print(f"[ROBOT] Connection failed: {e}")
             return False
 
+    def reconnect(self) -> bool:
+        """Attempt to reconnect after connection loss."""
+        self.disconnect()
+        self.reconnect_attempts += 1
+        print(f"[ROBOT] Reconnecting (attempt #{self.reconnect_attempts})...")
+        time.sleep(0.5)  # Brief pause before reconnect
+        return self.connect()
+
     def disconnect(self):
         if self.socket:
-            self.socket.close()
+            try:
+                self.socket.close()
+            except:
+                pass
             self.socket = None
 
-    def send_command(self, cmd: int, d1: int = 0, d2: int = 0, d3: int = 0) -> bool:
+    def send_command(self, cmd: int, d1: int = 0, d2: int = 0, d3: int = 0) -> tuple[bool, float]:
+        """Send command and return (success, latency_ms)."""
         if not self.socket:
-            return False
+            if self.metrics:
+                self.metrics.record(False, 0)
+            return False, 0
+
+        start = time.perf_counter()
         try:
             msg = json.dumps({"H": "1", "N": cmd, "D1": d1, "D2": d2, "D3": d3}) + "\n"
             self.socket.sendall(msg.encode())
             # Read response (non-blocking, just clear buffer)
-            self.socket.settimeout(0.1)
+            self.socket.settimeout(0.2)
             try:
                 self.socket.recv(1024)
             except socket.timeout:
                 pass
             self.socket.settimeout(2.0)
-            return True
+
+            latency_ms = (time.perf_counter() - start) * 1000
+            if self.metrics:
+                self.metrics.record(True, latency_ms)
+            return True, latency_ms
+
         except Exception as e:
+            latency_ms = (time.perf_counter() - start) * 1000
             print(f"[ROBOT] Command failed: {e}")
-            return False
+            if self.metrics:
+                self.metrics.record(False, latency_ms)
+            return False, latency_ms
 
     def drive(self, direction: str, speed: int, duration_ms: int) -> bool:
         """Drive in a direction."""
@@ -207,7 +236,7 @@ class RobotClient:
             return self.stop()
 
         # Send drive command
-        success = self.send_command(3, dir_code, mapped_speed, 0)
+        success, _ = self.send_command(3, dir_code, mapped_speed, 0)
         if success and duration_ms > 0:
             time.sleep(duration_ms / 1000.0)
             self.stop()
@@ -236,7 +265,8 @@ class RobotClient:
 
     def stop(self) -> bool:
         """Emergency stop."""
-        return self.send_command(1, 0, 0, 0)  # Motor stop
+        success, _ = self.send_command(1, 0, 0, 0)  # Motor stop
+        return success
 
 
 # === Camera Capture ===
@@ -368,17 +398,17 @@ def run_driver(duration_s: int, config: Config, dry_run: bool = False):
     print("[DRIVER] Initializing...")
     depth_estimator = DepthEstimator()
 
-    robot: Optional[RobotClient] = None
-    if not dry_run:
-        robot = RobotClient(config.robot_host, config.robot_port)
-        if not robot.connect():
-            print("[ERROR] Could not connect to robot")
-            return
-
     state = DriverState(
         start_time=time.time(),
         smoothed_depth=DepthZones(left=25, center=14, right=25),  # baseline
     )
+
+    robot: Optional[RobotClient] = None
+    if not dry_run:
+        robot = RobotClient(config.robot_host, config.robot_port, metrics=state.connection_metrics)
+        if not robot.connect():
+            print("[ERROR] Could not connect to robot")
+            return
 
     # Signal handler for clean shutdown
     def signal_handler(sig, frame):
@@ -443,10 +473,26 @@ def run_driver(duration_s: int, config: Config, dry_run: bool = False):
                       f"R:{state.smoothed_depth.right:5.1f}% → {decision.value}")
             else:
                 success = execute_decision(decision, robot, config)
+                status = "OK" if success else "FAIL"
+
+                # Show latency info if available
+                metrics = state.connection_metrics
+                latency_info = ""
+                if metrics.latencies_ms:
+                    latency_info = f" [{metrics.latencies_ms[-1]:.0f}ms]"
+
                 print(f"[DRIVER] L:{state.smoothed_depth.left:5.1f}% "
                       f"C:{state.smoothed_depth.center:5.1f}% "
                       f"R:{state.smoothed_depth.right:5.1f}% → {decision.value} "
-                      f"({'OK' if success else 'FAIL'})")
+                      f"({status}){latency_info}")
+
+                # Attempt reconnection on repeated failures
+                if not success and robot.reconnect_attempts < 3:
+                    print("[DRIVER] Command failed, attempting reconnect...")
+                    if robot.reconnect():
+                        print("[DRIVER] Reconnected successfully")
+                    else:
+                        print("[DRIVER] Reconnect failed")
 
             state.last_decision = decision
 
@@ -463,11 +509,32 @@ def run_driver(duration_s: int, config: Config, dry_run: bool = False):
             robot.disconnect()
 
         elapsed = time.time() - state.start_time
-        print(f"\n[DRIVER] Summary:")
-        print(f"  Duration: {elapsed:.1f}s")
-        print(f"  Forward moves: {state.forward_count}")
-        print(f"  Turns: {state.turn_count}")
-        print(f"  Vision failures: {state.vision_failures}")
+        metrics = state.connection_metrics
+
+        print(f"\n{'='*60}")
+        print(f"DRIVER SUMMARY")
+        print(f"{'='*60}")
+        print(f"\nDriving:")
+        print(f"  Duration:       {elapsed:.1f}s")
+        print(f"  Forward moves:  {state.forward_count}")
+        print(f"  Turns:          {state.turn_count}")
+        print(f"  Vision fails:   {state.vision_failures}")
+
+        if not dry_run and metrics.commands_sent > 0:
+            print(f"\nConnection Quality:")
+            print(f"  Commands sent:  {metrics.commands_sent}")
+            print(f"  Success rate:   {metrics.success_rate():.1f}%")
+            print(f"  Avg latency:    {metrics.avg_latency():.1f}ms")
+            print(f"  Max latency:    {metrics.max_latency():.1f}ms")
+
+            if metrics.success_rate() < 90:
+                print(f"\n⚠️  Poor connection - {metrics.commands_failed} commands failed")
+            elif metrics.avg_latency() > 100:
+                print(f"\n⚠️  High latency may affect responsiveness")
+            else:
+                print(f"\n✅ Connection quality acceptable")
+
+        print(f"{'='*60}")
 
 
 # === Entry Point ===

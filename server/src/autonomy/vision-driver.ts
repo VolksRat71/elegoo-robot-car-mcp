@@ -10,7 +10,7 @@
  */
 
 import { getVisionClient } from "../vision-client.js";
-import { getRobotClient } from "../robot-client-stock.js";
+import { getRobotClient } from "../robot-client.js";
 import { getAutonomyStateMachine } from "./state-machine.js";
 import { getMapStore } from "../map-store.js";
 import { getSessionLogger } from "./logger.js";
@@ -233,12 +233,13 @@ async function getDepthZones(): Promise<DepthZones | null> {
   try {
     // Capture image from robot camera
     const imageResult = await robot.captureImage();
-    if (!imageResult.success || !imageResult.data?.image) {
+    const imageData = imageResult.data as { image?: string } | undefined;
+    if (!imageResult.success || !imageData?.image) {
       return null;
     }
 
     // Analyze with vision service
-    const analysis = await visionClient.analyze(imageResult.data.image, {
+    const analysis = await visionClient.analyze(imageData.image, {
       runDepth: true,
       runDetection: false,
     });
