@@ -67,11 +67,13 @@ class Config:
     reverse_speed: int = 30
 
     # Timing
+    # drive_duration > loop_interval = overlapping commands = smooth motion
+    # If connection drops, robot stops after drive_duration (failsafe)
     loop_interval_ms: int = 300
-    drive_duration_ms: int = 300
+    drive_duration_ms: int = 500  # 200ms overlap for smooth motion
     turn_degrees_small: int = 25
     turn_degrees_large: int = 50
-    reverse_duration_ms: int = 250
+    reverse_duration_ms: int = 300
 
     # Smoothing
     ema_alpha: float = 0.4
@@ -396,6 +398,7 @@ def main():
         config.slow_speed = 18
         config.clear_threshold = 30
         config.obstacle_threshold = 35
+        config.drive_duration_ms = 600  # Even more overlap for smoother cautious driving
         print("[CONFIG] Using cautious settings")
 
     run_driver(args.duration, config, dry_run=args.dry_run)
