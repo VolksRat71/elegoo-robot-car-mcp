@@ -5,9 +5,10 @@ interface ControlPanelProps {
   onCommandStart?: () => void;
   onCommandEnd?: () => void;
   disabled?: boolean;
+  compact?: boolean;
 }
 
-export function ControlPanel({ onCommandStart, onCommandEnd, disabled }: ControlPanelProps) {
+export function ControlPanel({ onCommandStart, onCommandEnd, disabled, compact }: ControlPanelProps) {
   const [activeKey, setActiveKey] = useState<string | null>(null);
   const [isExploring, setIsExploring] = useState(false);
 
@@ -90,23 +91,25 @@ export function ControlPanel({ onCommandStart, onCommandEnd, disabled }: Control
   };
 
   return (
-    <div className="panel">
-      <div className="panel-header">Robot Controls</div>
-      <div className="p-4">
+    <div className={compact ? '' : 'panel'}>
+      {!compact && <div className="panel-header">Robot Controls</div>}
+      <div className={compact ? 'p-3' : 'p-4'}>
         {/* Direction pad */}
-        <div className="flex flex-col items-center gap-2 mb-4">
+        <div className="flex flex-col items-center gap-1.5 mb-3">
           <ControlButton
             onClick={() => executeCommand(() => drive('forward', 50, 300))}
             active={activeKey === 'w' || activeKey === 'arrowup'}
             disabled={disabled}
+            size={compact ? 'sm' : 'md'}
           >
             <ArrowIcon direction="up" />
           </ControlButton>
-          <div className="flex gap-2">
+          <div className="flex gap-1.5">
             <ControlButton
               onClick={() => executeCommand(() => turn(-30, 40))}
               active={activeKey === 'a' || activeKey === 'arrowleft'}
               disabled={disabled}
+              size={compact ? 'sm' : 'md'}
             >
               <ArrowIcon direction="left" />
             </ControlButton>
@@ -115,14 +118,16 @@ export function ControlPanel({ onCommandStart, onCommandEnd, disabled }: Control
               active={activeKey === ' '}
               disabled={disabled}
               variant="danger"
-              className="w-14 h-14"
+              size={compact ? 'sm' : 'md'}
+              className={compact ? 'w-10 h-10' : 'w-14 h-14'}
             >
-              <span className="text-xs font-bold">STOP</span>
+              <span className="text-[10px] font-bold">STOP</span>
             </ControlButton>
             <ControlButton
               onClick={() => executeCommand(() => turn(30, 40))}
               active={activeKey === 'd' || activeKey === 'arrowright'}
               disabled={disabled}
+              size={compact ? 'sm' : 'md'}
             >
               <ArrowIcon direction="right" />
             </ControlButton>
@@ -131,6 +136,7 @@ export function ControlPanel({ onCommandStart, onCommandEnd, disabled }: Control
             onClick={() => executeCommand(() => drive('backward', 50, 300))}
             active={activeKey === 's' || activeKey === 'arrowdown'}
             disabled={disabled}
+            size={compact ? 'sm' : 'md'}
           >
             <ArrowIcon direction="down" />
           </ControlButton>
@@ -140,41 +146,32 @@ export function ControlPanel({ onCommandStart, onCommandEnd, disabled }: Control
         <button
           onClick={handleExplore}
           disabled={disabled || isExploring}
-          className={`w-full py-3 rounded-lg font-semibold text-sm transition-all ${
+          className={`w-full py-2 rounded-lg font-semibold text-xs transition-all ${
             isExploring
               ? 'bg-[var(--accent-cyan)]/20 border-[var(--accent-cyan)] text-[var(--accent-cyan)] animate-pulse'
               : 'control-btn primary'
           } border`}
         >
-          {isExploring ? 'Exploring...' : 'Autonomous Explore (15s)'}
+          {isExploring ? 'Exploring...' : compact ? 'Explore' : 'Autonomous Explore (15s)'}
         </button>
 
-        {/* Keyboard hints */}
-        <div className="mt-4 pt-4 border-t border-[var(--border-primary)]">
-          <div className="data-label mb-2">Keyboard Controls</div>
-          <div className="grid grid-cols-2 gap-x-4 gap-y-1 text-xs">
-            <div className="flex justify-between">
-              <span className="text-[var(--text-muted)]">Forward</span>
-              <kbd className="font-mono text-[var(--text-secondary)] bg-[var(--bg-tertiary)] px-1.5 rounded">W</kbd>
-            </div>
-            <div className="flex justify-between">
-              <span className="text-[var(--text-muted)]">Back</span>
-              <kbd className="font-mono text-[var(--text-secondary)] bg-[var(--bg-tertiary)] px-1.5 rounded">S</kbd>
-            </div>
-            <div className="flex justify-between">
-              <span className="text-[var(--text-muted)]">Turn Left</span>
-              <kbd className="font-mono text-[var(--text-secondary)] bg-[var(--bg-tertiary)] px-1.5 rounded">A</kbd>
-            </div>
-            <div className="flex justify-between">
-              <span className="text-[var(--text-muted)]">Turn Right</span>
-              <kbd className="font-mono text-[var(--text-secondary)] bg-[var(--bg-tertiary)] px-1.5 rounded">D</kbd>
-            </div>
-            <div className="flex justify-between col-span-2">
-              <span className="text-[var(--text-muted)]">Emergency Stop</span>
-              <kbd className="font-mono text-[var(--text-secondary)] bg-[var(--bg-tertiary)] px-1.5 rounded">Space</kbd>
+        {/* Keyboard hints - hide in compact mode */}
+        {!compact && (
+          <div className="mt-3 pt-3 border-t border-[var(--border-primary)]">
+            <div className="data-label mb-1.5 text-[9px]">Keyboard</div>
+            <div className="grid grid-cols-3 gap-1 text-[10px]">
+              <div className="text-center">
+                <kbd className="font-mono text-[var(--text-secondary)] bg-[var(--bg-tertiary)] px-1 rounded text-[9px]">W</kbd>
+              </div>
+              <div className="text-center">
+                <kbd className="font-mono text-[var(--text-secondary)] bg-[var(--bg-tertiary)] px-1 rounded text-[9px]">A S D</kbd>
+              </div>
+              <div className="text-center">
+                <kbd className="font-mono text-[var(--text-secondary)] bg-[var(--bg-tertiary)] px-1 rounded text-[9px]">Space</kbd>
+              </div>
             </div>
           </div>
-        </div>
+        )}
       </div>
     </div>
   );
@@ -186,6 +183,7 @@ interface ControlButtonProps {
   active?: boolean;
   disabled?: boolean;
   variant?: 'default' | 'danger';
+  size?: 'sm' | 'md';
   className?: string;
 }
 
@@ -195,14 +193,16 @@ function ControlButton({
   active,
   disabled,
   variant = 'default',
+  size = 'md',
   className = '',
 }: ControlButtonProps) {
+  const sizeClasses = size === 'sm' ? 'w-10 h-10' : 'w-12 h-12';
   return (
     <button
       onClick={onClick}
       disabled={disabled}
       className={`
-        w-12 h-12 rounded-lg flex items-center justify-center
+        ${sizeClasses} rounded-lg flex items-center justify-center
         control-btn ${variant === 'danger' ? 'danger' : ''}
         ${active ? 'bg-[var(--accent-cyan)]/20 border-[var(--accent-cyan)] text-[var(--accent-cyan)]' : ''}
         ${disabled ? 'opacity-50 cursor-not-allowed' : ''}

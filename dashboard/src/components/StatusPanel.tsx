@@ -47,81 +47,74 @@ export function StatusPanel({
   return (
     <div className="panel">
       <div className="panel-header">System Status</div>
-      <div className="p-4 space-y-4">
-        {/* Connection status */}
-        <div className="flex items-center justify-between">
-          <div className="flex items-center gap-3">
+      <div className="p-3 space-y-2.5">
+        {/* Connection status - compact row */}
+        <div className="flex items-center gap-4">
+          <div className="flex items-center gap-2 flex-1">
             <div className={`status-dot ${robotConnected ? 'active' : 'error'}`} />
-            <span className="text-sm">Robot Connection</span>
+            <span className="text-xs">Robot</span>
+            <span className={`text-[10px] font-mono ml-auto ${robotConnected ? 'text-[var(--accent-green)]' : 'text-[var(--accent-red)]'}`}>
+              {robotConnected ? 'OK' : 'OFF'}
+            </span>
           </div>
-          <span className={`text-xs font-mono ${robotConnected ? 'text-[var(--accent-green)]' : 'text-[var(--accent-red)]'}`}>
-            {robotConnected ? 'CONNECTED' : 'DISCONNECTED'}
-          </span>
-        </div>
-
-        <div className="flex items-center justify-between">
-          <div className="flex items-center gap-3">
+          <div className="flex items-center gap-2 flex-1">
             <div className={`status-dot ${visionAvailable ? 'active' : 'warning'}`} />
-            <span className="text-sm">Vision Service</span>
+            <span className="text-xs">Vision</span>
+            <span className={`text-[10px] font-mono ml-auto ${visionAvailable ? 'text-[var(--accent-green)]' : 'text-[var(--accent-orange)]'}`}>
+              {visionAvailable ? 'OK' : '...'}
+            </span>
           </div>
-          <span className={`text-xs font-mono ${visionAvailable ? 'text-[var(--accent-green)]' : 'text-[var(--accent-orange)]'}`}>
-            {visionAvailable ? 'READY' : 'LOADING'}
-          </span>
         </div>
 
         <div className="h-px bg-[var(--border-primary)]" />
 
-        {/* Autonomy state */}
-        <div>
-          <div className="data-label mb-2">Autonomy State</div>
-          <div
-            className="font-mono text-lg font-bold"
-            style={{ color: getStateColor(state) }}
-          >
-            {state}
-          </div>
-          {worldState?.last_action && (
-            <div className="text-xs text-[var(--text-muted)] mt-1">
-              Last: {worldState.last_action}
-            </div>
-          )}
-        </div>
-
-        {/* Safety level */}
-        <div>
-          <div className="flex justify-between mb-2">
-            <span className="data-label">Safety Level</span>
-            <span
-              className="font-mono text-sm font-semibold"
-              style={{ color: getSafetyColor(safetyPercent) }}
-            >
-              {safetyPercent.toFixed(0)}%
-            </span>
-          </div>
-          <div className="progress-bar">
+        {/* Autonomy state + Safety in row */}
+        <div className="flex items-center gap-4">
+          <div className="flex-1">
+            <div className="data-label text-[9px] mb-0.5">State</div>
             <div
-              className="progress-fill"
-              style={{
-                width: `${safetyPercent}%`,
-                background: getSafetyColor(safetyPercent),
-              }}
-            />
+              className="font-mono text-sm font-bold"
+              style={{ color: getStateColor(state) }}
+            >
+              {state}
+            </div>
+          </div>
+          <div className="flex-1">
+            <div className="flex justify-between mb-0.5">
+              <span className="data-label text-[9px]">Safety</span>
+              <span
+                className="font-mono text-[10px] font-semibold"
+                style={{ color: getSafetyColor(safetyPercent) }}
+              >
+                {safetyPercent.toFixed(0)}%
+              </span>
+            </div>
+            <div className="progress-bar h-1">
+              <div
+                className="progress-fill"
+                style={{
+                  width: `${safetyPercent}%`,
+                  background: getSafetyColor(safetyPercent),
+                }}
+              />
+            </div>
           </div>
         </div>
 
-        {/* Front distance */}
+        {/* Front distance - compact */}
         <div>
-          <div className="data-label mb-1">Front Distance</div>
-          <div className="flex items-baseline gap-2">
-            <span className="font-mono text-2xl font-bold text-[var(--text-primary)]">
-              {formatDistance(frontDistance)}
-            </span>
-            {frontDistance < 200 && frontDistance > 0 && (
-              <span className="text-xs text-[var(--accent-orange)]">CLOSE</span>
-            )}
+          <div className="flex items-baseline justify-between">
+            <span className="data-label text-[9px]">Front Distance</span>
+            <div className="flex items-baseline gap-1">
+              <span className="font-mono text-lg font-bold text-[var(--text-primary)]">
+                {formatDistance(frontDistance)}
+              </span>
+              {frontDistance < 200 && frontDistance > 0 && (
+                <span className="text-[9px] text-[var(--accent-orange)]">!</span>
+              )}
+            </div>
           </div>
-          {/* Distance bar visualization */}
-          <div className="mt-2 h-2 bg-[var(--bg-secondary)] rounded-full overflow-hidden">
+          <div className="mt-1 h-1.5 bg-[var(--bg-secondary)] rounded-full overflow-hidden">
             <div
               className="h-full transition-all duration-300"
               style={{
@@ -135,34 +128,30 @@ export function StatusPanel({
               }}
             />
           </div>
-          <div className="flex justify-between text-[10px] text-[var(--text-muted)] mt-1 font-mono">
-            <span>0</span>
-            <span>1m</span>
-          </div>
         </div>
 
         <div className="h-px bg-[var(--border-primary)]" />
 
-        {/* Additional stats */}
-        <div className="grid grid-cols-2 gap-3">
+        {/* Stats grid - more compact */}
+        <div className="grid grid-cols-4 gap-2 text-center">
           <div>
-            <div className="data-label">Stuck Counter</div>
-            <div className="data-value">{worldState?.stuck_counter || 0}</div>
+            <div className="data-label text-[8px]">Stuck</div>
+            <div className="font-mono text-xs">{worldState?.stuck_counter || 0}</div>
           </div>
           <div>
-            <div className="data-label">Queue Depth</div>
-            <div className="data-value">{worldState?.health.queue_depth || 0}</div>
+            <div className="data-label text-[8px]">Queue</div>
+            <div className="font-mono text-xs">{worldState?.health.queue_depth || 0}</div>
           </div>
           <div>
-            <div className="data-label">Localization</div>
-            <div className="data-value">
+            <div className="data-label text-[8px]">Loc</div>
+            <div className="font-mono text-xs">
               {((worldState?.confidence.localization || 0) * 100).toFixed(0)}%
             </div>
           </div>
           <div>
-            <div className="data-label">Last Update</div>
-            <div className="data-value text-xs">
-              {lastUpdate ? `${((Date.now() - lastUpdate) / 1000).toFixed(1)}s ago` : '-'}
+            <div className="data-label text-[8px]">Update</div>
+            <div className="font-mono text-xs">
+              {lastUpdate ? `${((Date.now() - lastUpdate) / 1000).toFixed(0)}s` : '-'}
             </div>
           </div>
         </div>

@@ -214,3 +214,9 @@ body {
   background: rgba(0, 212, 255, 0.2);
   border-color: var(--accent-cyan);
 }
+
+/* Vertical text for slide-out tab */
+.writing-mode-vertical {
+  writing-mode: vertical-rl;
+  text-orientation: mixed;
+}
