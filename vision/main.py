@@ -24,6 +24,37 @@ depth_estimator: Optional[DepthEstimator] = None
 object_detector: Optional[ObjectDetector] = None
 
 
+def warmup_models(depth: DepthEstimator, detector: ObjectDetector) -> None:
+    """
+    Run warmup inference on both models.
+
+    This primes PyTorch JIT compilation and ensures the first real
+    inference is fast. Uses a small dummy image to minimize warmup time.
+    """
+    import time
+    import numpy as np
+
+    logger.info("Running warmup inference...")
+
+    # Create a small dummy image (320x240 RGB)
+    dummy_array = np.random.randint(0, 255, (240, 320, 3), dtype=np.uint8)
+    dummy_image = Image.fromarray(dummy_array)
+
+    # Warmup depth estimation
+    start = time.time()
+    depth.estimate(dummy_image)
+    depth_time = (time.time() - start) * 1000
+    logger.info(f"Depth warmup complete: {depth_time:.0f}ms")
+
+    # Warmup object detection
+    start = time.time()
+    detector.detect(dummy_image)
+    detect_time = (time.time() - start) * 1000
+    logger.info(f"Detection warmup complete: {detect_time:.0f}ms")
+
+    logger.info(f"Warmup complete! Models primed for fast inference.")
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Load models at startup, cleanup at shutdown."""
@@ -40,6 +71,9 @@ async def lifespan(app: FastAPI):
     object_detector = ObjectDetector(model_size="yolov8n")
 
     logger.info("Vision models loaded successfully!")
+
+    # Warmup inference to prime JIT compilation
+    warmup_models(depth_estimator, object_detector)
 
     yield
 

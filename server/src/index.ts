@@ -13,6 +13,7 @@ import { createServer } from "http";
 
 import { getStockRobotClient } from "./robot-client-stock.js";
 import { getMapStore } from "./map-store.js";
+import { getVisionServiceManager } from "./vision-service-manager.js";
 
 // Use stock client for Elegoo's built-in firmware
 const getRobotClient = getStockRobotClient;
@@ -208,11 +209,34 @@ async function main() {
   const visionUrl = process.env.VISION_SERVICE_URL || "http://localhost:8765";
   const useHttp = process.argv.includes("--http") || process.env.MCP_HTTP === "true";
   const httpPort = parseInt(process.env.MCP_PORT || "3456");
+  const autoStartVision = process.env.VISION_AUTO_START !== "false"; // Default: true
 
   console.error(`Elegoo Robot Car MCP Server starting...`);
   console.error(`Robot: ${robotHost}:${robotPort} (stock Elegoo firmware)`);
   console.error(`Vision service: ${visionUrl}`);
+  console.error(`Vision auto-start: ${autoStartVision}`);
   console.error(`Transport: ${useHttp ? `HTTP/SSE on port ${httpPort}` : "stdio"}`);
+
+  // Start vision service (Python sidecar)
+  const visionManager = getVisionServiceManager();
+  if (autoStartVision) {
+    console.error("Starting vision service...");
+    const visionStarted = await visionManager.start();
+    if (visionStarted) {
+      console.error("Vision service started and ready!");
+    } else {
+      console.error("Warning: Vision service failed to start. observe(mode='burst') will not include vision data.");
+    }
+  }
+
+  // Set up graceful shutdown
+  const shutdown = () => {
+    console.error("Shutting down...");
+    visionManager.stop();
+    process.exit(0);
+  };
+  process.on("SIGINT", shutdown);
+  process.on("SIGTERM", shutdown);
 
   // Initialize robot client for stock Elegoo firmware (TCP port 100)
   const robot = getRobotClient(robotHost, robotPort);

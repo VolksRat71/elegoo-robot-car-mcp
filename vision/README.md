@@ -7,8 +7,29 @@ Python FastAPI service providing MiDaS depth estimation and YOLOv8 object detect
 - **MiDaS Depth Estimation**: Estimates relative distances from a single camera image
 - **YOLOv8 Object Detection**: Detects and labels objects with bounding boxes and bearing angles
 - **FastAPI HTTP Interface**: Easy integration with the Node.js MCP server
+- **Warmup Inference**: Models are primed at startup for fast response times
+- **Auto-managed**: Node MCP server automatically starts/stops the Python service
 
-## Setup
+## Auto-Start (Recommended)
+
+The Node MCP server automatically manages this Python service. Just run:
+
+```bash
+cd server
+npm start
+```
+
+The vision service will:
+1. Start automatically as a child process
+2. Load models and run warmup inference
+3. Be monitored and restarted if it crashes
+4. Shut down cleanly when the MCP server stops
+
+To disable auto-start: `VISION_AUTO_START=false npm start`
+
+## Manual Setup (Optional)
+
+If you prefer to run the vision service separately:
 
 1. Create a virtual environment:
    ```bash
