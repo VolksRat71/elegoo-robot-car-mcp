@@ -73,6 +73,80 @@
       ],
       "screenshot": "03_blocked_right_full.png",
       "notes": "6in foam pad at ~45deg angle (1ft ahead, 1ft right). RIGHT zone jumped from 25% to 46%. LEFT and CENTER unchanged."
+    },
+    {
+      "id": 4,
+      "label": "blocked_left",
+      "description": "Obstacle on left side (6in foam pad at 1ft ahead, 1ft to left)",
+      "expected_action": "turn_right",
+      "depth_zones": {
+        "left": 41,
+        "center": 13,
+        "right": 31
+      },
+      "center_depth_pct": 3,
+      "safety_pct": 20,
+      "front_distance_mm": 0,
+      "detected_objects": [
+        {
+          "label": "Cat",
+          "confidence": 27,
+          "bearing_deg": -22
+        }
+      ],
+      "screenshot": "04_blocked_left_full.png",
+      "notes": "6in foam pad at ~45deg angle (1ft ahead, 1ft left). LEFT zone jumped from 24% to 41% (+17%). CENTER unchanged at ~13-14%."
+    },
+    {
+      "id": 5,
+      "label": "blocked_close",
+      "description": "Very close obstacle (6in foam pad within 6 inches directly ahead)",
+      "expected_action": "stop_immediately",
+      "depth_zones": {
+        "left": 13,
+        "center": 70,
+        "right": 20
+      },
+      "center_depth_pct": 82,
+      "safety_pct": 20,
+      "front_distance_mm": 0,
+      "detected_objects": [
+        {
+          "label": "Tv",
+          "confidence": 54,
+          "bearing_deg": 20
+        }
+      ],
+      "screenshot": "05_blocked_close_full.png",
+      "notes": "6in foam pad placed <6in directly ahead. CENTER zone jumped to 70% (header 82%). Much higher than blocked_center (42%) confirming proximity correlation."
+    },
+    {
+      "id": 6,
+      "label": "blocked_far",
+      "description": "Distant obstacle (6in foam pad approximately 3ft directly ahead)",
+      "expected_action": "proceed_cautiously",
+      "depth_zones": {
+        "left": 28,
+        "center": 18,
+        "right": 24
+      },
+      "center_depth_pct": 10,
+      "safety_pct": 20,
+      "front_distance_mm": 0,
+      "detected_objects": [
+        {
+          "label": "Tv",
+          "confidence": 37,
+          "bearing_deg": 20
+        },
+        {
+          "label": "Couch",
+          "confidence": 28,
+          "bearing_deg": -19
+        }
+      ],
+      "screenshot": "06_blocked_far_full.png",
+      "notes": "6in foam pad at ~3ft ahead. CENTER zone only 18% (header 10%), barely above baseline 14%. At this distance, small obstacles are NOT reliably detected by depth alone."
     }
   ]
 }
