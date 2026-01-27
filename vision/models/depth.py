@@ -95,21 +95,32 @@ class DepthEstimator:
         """
         depth_normalized = self._get_depth_map(image)
 
-        # Calculate zone depths (left third, center third, right third)
         h, w = depth_normalized.shape
+
+        # === ROI: Only use the middle vertical band ===
+        # Ignore top 30% (ceiling, windows, lights - often misestimated)
+        # Ignore bottom 25% (floor - always reads as close)
+        # This focuses on the "decision zone" where obstacles actually matter
+        roi_top = int(h * 0.30)
+        roi_bottom = int(h * 0.75)
+        depth_roi = depth_normalized[roi_top:roi_bottom, :]
+
+        # Calculate zone depths (left third, center third, right third)
+        # Use 75th percentile instead of mean - more robust to noise
+        # (median was too conservative, mean too sensitive to outliers)
         third_w = w // 3
 
         depth_zones = {
-            "left": float(np.mean(depth_normalized[:, :third_w])),
-            "center": float(np.mean(depth_normalized[:, third_w : 2 * third_w])),
-            "right": float(np.mean(depth_normalized[:, 2 * third_w :])),
+            "left": float(np.percentile(depth_roi[:, :third_w], 75)),
+            "center": float(np.percentile(depth_roi[:, third_w : 2 * third_w], 75)),
+            "right": float(np.percentile(depth_roi[:, 2 * third_w :], 75)),
         }
 
-        # Center depth (middle 20% of image)
-        center_region = depth_normalized[
-            int(h * 0.4) : int(h * 0.6), int(w * 0.4) : int(w * 0.6)
+        # Center depth for danger detection (middle region of ROI)
+        center_region = depth_roi[
+            :, int(w * 0.35) : int(w * 0.65)
         ]
-        center_depth = float(np.mean(center_region))
+        center_depth = float(np.percentile(center_region, 75))
 
         result = {
             "center_depth": round(center_depth, 3),

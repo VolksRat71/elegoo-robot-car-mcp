@@ -75,11 +75,16 @@ class Config:
     camera_url: str = "http://192.168.4.1:81/stream"
     vision_service_url: str = "http://localhost:8765"
 
-    # Thresholds (percentages)
-    clear_threshold: float = 25.0
-    obstacle_threshold: float = 40.0
-    danger_threshold: float = 60.0
-    wall_variance: float = 10.0
+    # Thresholds (percentages) - with hysteresis
+    clear_threshold: float = 35.0
+    obstacle_threshold: float = 50.0  # Must exceed this to become obstacle
+    obstacle_off_threshold: float = 40.0  # Must fall below this to clear
+    danger_threshold: float = 70.0
+    wall_variance: float = 12.0
+
+    # Motion commitment (prevents oscillation)
+    forward_commitment_ms: int = 1200  # After turn, commit to forward for this long
+    wall_reverse_ms: int = 400  # Reverse this long when hitting wall
 
     # Speeds (0-100)
     cruise_speed: int = 35
@@ -140,8 +145,11 @@ class Config:
             self.turn_degrees_large = mode_config.get("turn_degrees_large", self.turn_degrees_large)
             self.clear_threshold = mode_config.get("clear_threshold", self.clear_threshold)
             self.obstacle_threshold = mode_config.get("obstacle_threshold", self.obstacle_threshold)
+            self.obstacle_off_threshold = mode_config.get("obstacle_off_threshold", self.obstacle_off_threshold)
             self.danger_threshold = mode_config.get("danger_threshold", self.danger_threshold)
             self.wall_variance = mode_config.get("wall_variance", self.wall_variance)
+            self.forward_commitment_ms = mode_config.get("forward_commitment_ms", self.forward_commitment_ms)
+            self.wall_reverse_ms = mode_config.get("wall_reverse_ms", self.wall_reverse_ms)
 
             smoothing = data.get("smoothing", {})
             self.ema_alpha = smoothing.get("ema_alpha", self.ema_alpha)
@@ -187,8 +195,11 @@ class Config:
         config.reverse_duration_ms = mode_config.get("reverse_duration_ms", config.reverse_duration_ms)
         config.clear_threshold = mode_config.get("clear_threshold", config.clear_threshold)
         config.obstacle_threshold = mode_config.get("obstacle_threshold", config.obstacle_threshold)
+        config.obstacle_off_threshold = mode_config.get("obstacle_off_threshold", config.obstacle_off_threshold)
         config.danger_threshold = mode_config.get("danger_threshold", config.danger_threshold)
         config.wall_variance = mode_config.get("wall_variance", config.wall_variance)
+        config.forward_commitment_ms = mode_config.get("forward_commitment_ms", config.forward_commitment_ms)
+        config.wall_reverse_ms = mode_config.get("wall_reverse_ms", config.wall_reverse_ms)
 
         # Load smoothing settings
         smoothing = data.get("smoothing", {})
@@ -249,6 +260,7 @@ class DriverState:
     running: bool = True
     last_decision: Decision = Decision.STOP
     consecutive_stops: int = 0
+    consecutive_forwards: int = 0  # Track wall-following patterns
     vision_failures: int = 0
     smoothed_depth: Optional[DepthZones] = None
     turn_count: int = 0
@@ -261,6 +273,16 @@ class DriverState:
     last_head_scan_time: float = 0.0  # Proactive head scanning
     head_scan_count: int = 0
     glance_count: int = 0
+    exploration_turns: int = 0  # Track proactive exploration
+
+    # Motion commitment FSM - prevents oscillation
+    committed_until: float = 0.0  # Timestamp when commitment ends
+    committed_decision: Optional[Decision] = None  # What we're committed to
+
+    # Hysteresis state - tracks which zones are "in obstacle mode"
+    left_is_obstacle: bool = False
+    center_is_obstacle: bool = False
+    right_is_obstacle: bool = False
 
 
 # === Camera Capture ===
@@ -494,13 +516,32 @@ class HeadScanScheduler:
         left_count = self.recent_turns.count("left")
         right_count = self.recent_turns.count("right")
 
-        # If 80%+ turns in one direction, bias against it
+        # If 70%+ turns in one direction, bias against it (was 80%)
         total = left_count + right_count
         if total > 0:
-            if left_count / total >= 0.8:
+            if left_count / total >= 0.7:
                 return "left"
-            if right_count / total >= 0.8:
+            if right_count / total >= 0.7:
                 return "right"
+
+        return None
+
+    def should_force_opposite(self) -> Optional[str]:
+        """
+        If we've been turning same direction 3+ times, FORCE the opposite.
+        This breaks circling patterns even when depth says otherwise.
+        Reduced from 5 to 3 for faster escape.
+        """
+        if len(self.recent_turns) < 3:
+            return None
+
+        last_3 = self.recent_turns[-3:]
+        if all(t == "left" for t in last_3):
+            print("[CIRCLE] 3 consecutive lefts - forcing RIGHT")
+            return "right"
+        if all(t == "right" for t in last_3):
+            print("[CIRCLE] 3 consecutive rights - forcing LEFT")
+            return "left"
 
         return None
 
@@ -633,6 +674,37 @@ class VisitTracker:
         """Check if we've visited current cell too many times."""
         return self.get_visit_count() >= threshold
 
+    def should_explore(self) -> Optional[str]:
+        """
+        Proactive exploration: occasionally suggest turning toward unexplored areas
+        even when forward is clear. This breaks the "follow walls in circles" pattern.
+
+        Returns: "left", "right", or None
+        """
+        import random
+
+        # Only suggest exploration every ~10 forward moves (10% chance)
+        if random.random() > 0.10:
+            return None
+
+        left_score = self.get_exploration_score("left")
+        right_score = self.get_exploration_score("right")
+        forward_score = self.get_exploration_score("forward")
+
+        # Only explore if a side is significantly less visited than forward
+        min_side = min(left_score, right_score)
+        if min_side >= forward_score:
+            return None  # Forward is as good or better
+
+        # Bias toward the less explored side
+        if left_score < right_score - 1:
+            return "left"
+        elif right_score < left_score - 1:
+            return "right"
+
+        # Both sides similar and better than forward - random choice
+        return "left" if random.random() > 0.5 else "right"
+
     def get_stats(self) -> dict:
         """Get tracking statistics."""
         return {
@@ -741,57 +813,112 @@ def smooth_depth(current: DepthZones, previous: Optional[DepthZones], alpha: flo
     )
 
 
+def apply_hysteresis(depth: DepthZones, state: DriverState, config: Config) -> tuple:
+    """
+    Apply hysteresis to depth readings to prevent oscillation.
+    Returns (left_blocked, center_blocked, right_blocked) booleans.
+
+    A zone becomes "blocked" when it exceeds obstacle_threshold.
+    It becomes "clear" only when it falls below obstacle_off_threshold.
+    """
+    # Update left
+    if depth.left > config.obstacle_threshold:
+        state.left_is_obstacle = True
+    elif depth.left < config.obstacle_off_threshold:
+        state.left_is_obstacle = False
+
+    # Update center
+    if depth.center > config.obstacle_threshold:
+        state.center_is_obstacle = True
+    elif depth.center < config.obstacle_off_threshold:
+        state.center_is_obstacle = False
+
+    # Update right
+    if depth.right > config.obstacle_threshold:
+        state.right_is_obstacle = True
+    elif depth.right < config.obstacle_off_threshold:
+        state.right_is_obstacle = False
+
+    return (state.left_is_obstacle, state.center_is_obstacle, state.right_is_obstacle)
+
+
 def is_wall_pattern(depth: DepthZones, config: Config) -> bool:
-    """Check if depth pattern indicates a wall."""
+    """Check if depth pattern indicates a wall (all zones similar and high)."""
     values = [depth.left, depth.center, depth.right]
     return max(values) - min(values) < config.wall_variance and min(values) > config.obstacle_threshold
 
 
-def is_narrow_passage(depth: DepthZones, config: Config) -> bool:
+def is_narrow_passage(depth: DepthZones, state: DriverState, config: Config) -> bool:
     """Check if depth pattern indicates a narrow passage."""
     return (
-        depth.left > config.obstacle_threshold and
-        depth.right > config.obstacle_threshold and
+        state.left_is_obstacle and
+        state.right_is_obstacle and
+        not state.center_is_obstacle and
         depth.center < config.clear_threshold
     )
 
 
 def make_decision(depth: DepthZones, state: DriverState, config: Config) -> Decision:
-    """Make navigation decision based on depth zones."""
+    """
+    Make navigation decision based on depth zones with hysteresis.
+    Uses enter/exit thresholds to prevent oscillation.
+    """
+    import random
+
+    # Apply hysteresis to get stable blocked/clear state
+    left_blocked, center_blocked, right_blocked = apply_hysteresis(depth, state, config)
+
     left, center, right = depth.left, depth.center, depth.right
 
-    # DANGER: Very close obstacle
+    # DANGER: Very close obstacle - always stop (no hysteresis, safety critical)
     if center > config.danger_threshold:
         return Decision.STOP
 
-    # Wall detected - turn around
+    # Wall detected - needs special handling (reverse first)
+    # Return a special marker that the main loop will handle
     if is_wall_pattern(depth, config):
-        return Decision.TURN_RIGHT_LARGE if state.turn_count % 2 == 0 else Decision.TURN_LEFT_LARGE
+        # Pick direction based on which side is slightly clearer, with randomness
+        if abs(left - right) < 5:
+            go_left = random.random() > 0.5
+        else:
+            go_left = left < right
+        return Decision.TURN_LEFT_LARGE if go_left else Decision.TURN_RIGHT_LARGE
 
     # Narrow passage - proceed slowly
-    if is_narrow_passage(depth, config):
+    if is_narrow_passage(depth, state, config):
         return Decision.FORWARD_SLOW
 
     # Center blocked - turn toward clearer side
-    if center > config.obstacle_threshold:
-        if left < right:
-            return Decision.TURN_LEFT if left < config.obstacle_threshold else Decision.TURN_LEFT_LARGE
+    if center_blocked:
+        # Use actual depth values to pick direction, not just blocked state
+        if abs(left - right) < 10:
+            # Ambiguous - random choice to break patterns
+            go_left = random.random() > 0.5
         else:
-            return Decision.TURN_RIGHT if right < config.obstacle_threshold else Decision.TURN_RIGHT_LARGE
+            go_left = left < right
 
-    # Left blocked
-    if left > config.obstacle_threshold and right < config.obstacle_threshold:
+        if go_left:
+            return Decision.TURN_LEFT if not left_blocked else Decision.TURN_LEFT_LARGE
+        else:
+            return Decision.TURN_RIGHT if not right_blocked else Decision.TURN_RIGHT_LARGE
+
+    # Left blocked only
+    if left_blocked and not right_blocked:
         return Decision.TURN_RIGHT
 
-    # Right blocked
-    if right > config.obstacle_threshold and left < config.obstacle_threshold:
+    # Right blocked only
+    if right_blocked and not left_blocked:
         return Decision.TURN_LEFT
 
-    # Some obstruction but center clear
+    # Both sides blocked but center clear (narrow)
+    if left_blocked and right_blocked and not center_blocked:
+        return Decision.FORWARD_SLOW
+
+    # Some obstruction sensed but not "blocked" yet - slow down
     if left > config.clear_threshold or right > config.clear_threshold:
         return Decision.FORWARD_SLOW
 
-    # All clear
+    # All clear - full speed ahead
     return Decision.FORWARD
 
 
@@ -825,6 +952,20 @@ def execute_decision(decision: Decision, robot: RobotClient, config: Config) -> 
     return result.get("success", False) if isinstance(result, dict) else bool(result)
 
 
+# === Snapshot Cleanup ===
+
+def cleanup_snapshots(config: Config):
+    """Clear old snapshots at session start/end."""
+    snapshot_dir = Path(CONFIG_PATH).parent / config.snapshots_path
+    if snapshot_dir.exists():
+        count = 0
+        for f in snapshot_dir.glob("*.jpg"):
+            f.unlink()
+            count += 1
+        if count > 0:
+            print(f"[CLEANUP] Removed {count} old snapshots")
+
+
 # === Main Driver Loop ===
 
 def run_driver(duration_s: int, config: Config, dry_run: bool = False):
@@ -836,6 +977,9 @@ def run_driver(duration_s: int, config: Config, dry_run: bool = False):
 
     # Initialize
     print("[DRIVER] Initializing...")
+
+    # Clean up old snapshots from previous sessions
+    cleanup_snapshots(config)
     depth_estimator = DepthEstimator()
 
     state = DriverState(
@@ -945,8 +1089,44 @@ def run_driver(duration_s: int, config: Config, dry_run: bool = False):
             # Smooth
             state.smoothed_depth = smooth_depth(current_depth, state.smoothed_depth, config.ema_alpha)
 
-            # Decide based on depth
-            decision = make_decision(state.smoothed_depth, state, config)
+            # === Motion Commitment FSM ===
+            # If we're committed to a motion, honor it unless DANGER
+            now = time.time()
+            if state.committed_until > now and state.committed_decision:
+                # Still in commitment window
+                if state.smoothed_depth.center > config.danger_threshold:
+                    # DANGER overrides commitment
+                    print("[COMMIT] Breaking commitment - DANGER detected")
+                    state.committed_until = 0
+                    state.committed_decision = None
+                    decision = Decision.STOP
+                else:
+                    # Honor commitment
+                    decision = state.committed_decision
+            else:
+                # Not committed - make fresh decision
+                state.committed_decision = None
+
+                # Decide based on depth (with hysteresis)
+                decision = make_decision(state.smoothed_depth, state, config)
+
+                # === Wall Handling: Reverse First ===
+                # Walls require backing up to change geometry, then turning
+                if is_wall_pattern(state.smoothed_depth, config) and robot and not dry_run:
+                    print("[WALL] Detected - reversing before turn")
+                    # Reverse to change geometry
+                    robot.drive("backward", config.reverse_speed, config.wall_reverse_ms)
+                    # Now turn (decision already set to TURN_*_LARGE by make_decision)
+                    # After turn, commit to forward motion
+                    state.committed_decision = Decision.FORWARD
+                    state.committed_until = now + (config.forward_commitment_ms / 1000.0)
+                    print(f"[COMMIT] Will drive forward for {config.forward_commitment_ms}ms after turn")
+
+                # After any turn, commit to forward motion to prevent oscillation
+                elif decision in (Decision.TURN_LEFT, Decision.TURN_RIGHT,
+                                  Decision.TURN_LEFT_LARGE, Decision.TURN_RIGHT_LARGE):
+                    state.committed_decision = Decision.FORWARD
+                    state.committed_until = now + (config.forward_commitment_ms / 1000.0)
 
             # Apply Claude's nudges (copilot mode)
             nudges = load_nudges()
@@ -965,6 +1145,15 @@ def run_driver(duration_s: int, config: Config, dry_run: bool = False):
                     head_scanner.record_turn("left")
                 elif decision in (Decision.TURN_RIGHT, Decision.TURN_RIGHT_LARGE):
                     head_scanner.record_turn("right")
+
+                # FORCE opposite direction if circling too much
+                # This overrides depth-based decisions to break patterns
+                force_dir = head_scanner.should_force_opposite()
+                if force_dir and decision not in (Decision.STOP, Decision.REVERSE):
+                    if force_dir == "left" and state.smoothed_depth.left < config.danger_threshold:
+                        decision = Decision.TURN_LEFT_LARGE
+                    elif force_dir == "right" and state.smoothed_depth.right < config.danger_threshold:
+                        decision = Decision.TURN_RIGHT_LARGE
 
             # === Visit Tracking (Loop Prevention) ===
             # Always bias toward unexplored areas when making turn decisions
@@ -1034,6 +1223,50 @@ def run_driver(duration_s: int, config: Config, dry_run: bool = False):
                         state.consecutive_stops = 0
                 else:
                     state.consecutive_stops = 0
+
+            # === Proactive Exploration ===
+            # When going forward, occasionally explore unexplored directions
+            # This breaks the "follow walls in circles" pattern
+            if decision in (Decision.FORWARD, Decision.FORWARD_SLOW):
+                import random
+
+                state.consecutive_forwards += 1
+                explore_dir = None
+
+                # FORCE exploration after 15+ consecutive forwards (wall-following pattern)
+                # ~3 seconds of straight driving is likely following a wall
+                if state.consecutive_forwards >= 15:
+                    left_score = visit_tracker.get_exploration_score("left")
+                    right_score = visit_tracker.get_exploration_score("right")
+                    if left_score < right_score and state.smoothed_depth.left < config.obstacle_threshold:
+                        explore_dir = "left"
+                    elif state.smoothed_depth.right < config.obstacle_threshold:
+                        explore_dir = "right"
+                    if explore_dir:
+                        print(f"[EXPLORE] FORCED turn {explore_dir} after {state.consecutive_forwards} consecutive forwards")
+                        state.consecutive_forwards = 0
+
+                # Regular curiosity exploration (10% chance per forward)
+                if not explore_dir:
+                    explore_dir = visit_tracker.should_explore()
+
+                if explore_dir:
+                    # Check if that direction is clear enough
+                    if explore_dir == "left" and state.smoothed_depth.left < config.obstacle_threshold:
+                        if state.consecutive_forwards < 15:  # Not forced
+                            print(f"[EXPLORE] Curiosity turn left (proactive)")
+                        decision = Decision.TURN_LEFT
+                        state.exploration_turns += 1
+                        state.consecutive_forwards = 0
+                    elif explore_dir == "right" and state.smoothed_depth.right < config.obstacle_threshold:
+                        if state.consecutive_forwards < 15:  # Not forced
+                            print(f"[EXPLORE] Curiosity turn right (proactive)")
+                        decision = Decision.TURN_RIGHT
+                        state.exploration_turns += 1
+                        state.consecutive_forwards = 0
+            else:
+                # Reset consecutive forwards on any turn/stop
+                state.consecutive_forwards = 0
 
             # Track stats
             if decision in (Decision.FORWARD, Decision.FORWARD_SLOW):
@@ -1105,6 +1338,7 @@ def run_driver(duration_s: int, config: Config, dry_run: bool = False):
         # Visit tracking stats
         vt_stats = visit_tracker.get_stats()
         print(f"\nExploration:")
+        print(f"  Curiosity turns:{state.exploration_turns}")
         print(f"  Est. position:  ({vt_stats['position'][0]}, {vt_stats['position'][1]}) cm")
         print(f"  Est. heading:   {vt_stats['heading']}°")
         print(f"  Cells visited:  {vt_stats['cells_visited']}")
