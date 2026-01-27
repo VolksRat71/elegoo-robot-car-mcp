@@ -1,4 +1,6 @@
 """MiDaS depth estimation wrapper."""
+import base64
+import io
 import torch
 import numpy as np
 from PIL import Image
@@ -28,29 +30,13 @@ class DepthEstimator:
         else:
             self.transform = midas_transforms.small_transform
 
-    def estimate(self, image: Image.Image) -> dict:
-        """
-        Estimate relative depth from image.
-
-        Args:
-            image: PIL Image to analyze
-
-        Returns:
-            dict with:
-              - center_depth: depth at image center (0-1 normalized, higher = closer)
-              - depth_zones: {"left": float, "center": float, "right": float}
-              - image_size: {"width": int, "height": int}
-        """
-        # Convert PIL to numpy
+    def _get_depth_map(self, image: Image.Image) -> np.ndarray:
+        """Run MiDaS inference and return normalized depth map."""
         img_np = np.array(image)
-
-        # Apply transforms
         input_batch = self.transform(img_np).to(self.device)
 
         with torch.no_grad():
             prediction = self.model(input_batch)
-
-            # Resize to original resolution
             prediction = torch.nn.functional.interpolate(
                 prediction.unsqueeze(1),
                 size=img_np.shape[:2],
@@ -64,9 +50,50 @@ class DepthEstimator:
         depth_min = depth_map.min()
         depth_max = depth_map.max()
         if depth_max > depth_min:
-            depth_normalized = (depth_map - depth_min) / (depth_max - depth_min)
-        else:
-            depth_normalized = np.zeros_like(depth_map)
+            return (depth_map - depth_min) / (depth_max - depth_min)
+        return np.zeros_like(depth_map)
+
+    def _create_colormap(self, depth_normalized: np.ndarray) -> str:
+        """Create a colormap visualization and return as base64 JPEG."""
+        # Apply colormap: closer (high values) = warm colors, far = cool
+        # Using a simple cyan-to-red gradient
+        depth_uint8 = (depth_normalized * 255).astype(np.uint8)
+
+        # Create RGB colormap (blue for far, red for close)
+        h, w = depth_uint8.shape
+        colormap = np.zeros((h, w, 3), dtype=np.uint8)
+
+        # R channel: high for close objects
+        colormap[:, :, 0] = depth_uint8
+        # G channel: medium for mid-range
+        colormap[:, :, 1] = ((1 - np.abs(depth_normalized - 0.5) * 2) * 180).astype(
+            np.uint8
+        )
+        # B channel: high for far objects
+        colormap[:, :, 2] = (255 - depth_uint8)
+
+        # Convert to PIL and encode as base64 JPEG
+        img = Image.fromarray(colormap)
+        buffer = io.BytesIO()
+        img.save(buffer, format="JPEG", quality=85)
+        return base64.b64encode(buffer.getvalue()).decode("utf-8")
+
+    def estimate(self, image: Image.Image, include_image: bool = False) -> dict:
+        """
+        Estimate relative depth from image.
+
+        Args:
+            image: PIL Image to analyze
+            include_image: If True, include base64 colormap image in result
+
+        Returns:
+            dict with:
+              - center_depth: depth at image center (0-1 normalized, higher = closer)
+              - depth_zones: {"left": float, "center": float, "right": float}
+              - image_size: {"width": int, "height": int}
+              - depth_image: (optional) base64 JPEG colormap visualization
+        """
+        depth_normalized = self._get_depth_map(image)
 
         # Calculate zone depths (left third, center third, right third)
         h, w = depth_normalized.shape
@@ -84,8 +111,13 @@ class DepthEstimator:
         ]
         center_depth = float(np.mean(center_region))
 
-        return {
+        result = {
             "center_depth": round(center_depth, 3),
             "depth_zones": {k: round(v, 3) for k, v in depth_zones.items()},
             "image_size": {"width": w, "height": h},
         }
+
+        if include_image:
+            result["depth_image"] = self._create_colormap(depth_normalized)
+
+        return result

@@ -37,6 +37,8 @@ export interface VisionAnalysisResult {
     detected_objects: DetectedObject[];
     count: number;
   };
+  depth_image?: string; // base64 colormap
+  annotated_image?: string; // base64 with bounding boxes
   error?: string;
 }
 
@@ -83,9 +85,15 @@ export class VisionClient {
       runDepth?: boolean;
       runDetection?: boolean;
       detectionConfidence?: number;
+      includeImages?: boolean;
     } = {}
   ): Promise<VisionAnalysisResult> {
-    const { runDepth = true, runDetection = true, detectionConfidence = 0.25 } = options;
+    const {
+      runDepth = true,
+      runDetection = true,
+      detectionConfidence = 0.25,
+      includeImages = false,
+    } = options;
 
     try {
       const controller = new AbortController();
@@ -101,6 +109,7 @@ export class VisionClient {
           run_depth: runDepth,
           run_detection: runDetection,
           detection_confidence: detectionConfidence,
+          include_images: includeImages,
         }),
         signal: controller.signal,
       });

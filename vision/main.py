@@ -96,6 +96,7 @@ class AnalyzeRequest(BaseModel):
     run_depth: bool = True
     run_detection: bool = True
     detection_confidence: float = 0.25
+    include_images: bool = False  # Return visualization images (depth colormap, annotated)
 
 
 class AnalyzeResponse(BaseModel):
@@ -104,6 +105,8 @@ class AnalyzeResponse(BaseModel):
     success: bool
     depth: Optional[dict] = None
     detection: Optional[dict] = None
+    depth_image: Optional[str] = None  # base64 depth colormap
+    annotated_image: Optional[str] = None  # base64 image with bounding boxes
     error: Optional[str] = None
 
 
@@ -126,10 +129,13 @@ async def analyze_image(request: AnalyzeRequest):
         - run_depth: Whether to run MiDaS depth estimation (default: true)
         - run_detection: Whether to run YOLOv8 detection (default: true)
         - detection_confidence: Confidence threshold for detection (default: 0.25)
+        - include_images: Whether to return visualization images (default: false)
 
     Returns:
         - depth: Depth estimation results (if run_depth=true)
         - detection: Object detection results (if run_detection=true)
+        - depth_image: Base64 colormap visualization (if include_images=true)
+        - annotated_image: Base64 image with bounding boxes (if include_images=true)
     """
     if not depth_estimator or not object_detector:
         raise HTTPException(status_code=503, detail="Models not loaded")
@@ -143,14 +149,24 @@ async def analyze_image(request: AnalyzeRequest):
 
         # Run depth estimation
         if request.run_depth:
-            depth_result = depth_estimator.estimate(image)
+            depth_result = depth_estimator.estimate(
+                image, include_image=request.include_images
+            )
+            # Extract image from result if present
+            if "depth_image" in depth_result:
+                result["depth_image"] = depth_result.pop("depth_image")
             result["depth"] = depth_result
 
         # Run object detection
         if request.run_detection:
             detection_result = object_detector.detect(
-                image, confidence_threshold=request.detection_confidence
+                image,
+                confidence_threshold=request.detection_confidence,
+                include_image=request.include_images,
             )
+            # Extract image from result if present
+            if "annotated_image" in detection_result:
+                result["annotated_image"] = detection_result.pop("annotated_image")
             result["detection"] = detection_result
 
         return result
