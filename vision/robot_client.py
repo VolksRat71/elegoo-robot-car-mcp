@@ -11,10 +11,23 @@ import socket
 import time
 import threading
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Optional
 
 import numpy as np
 import requests
+
+
+# === Config Loading ===
+
+CONFIG_PATH = Path(__file__).parent / "config.json"
+
+def load_config() -> dict:
+    """Load configuration from JSON file."""
+    if CONFIG_PATH.exists():
+        with open(CONFIG_PATH) as f:
+            return json.load(f)
+    return {}
 
 
 # === Connection Metrics ===
@@ -322,6 +335,7 @@ class CameraStream:
 
     Keeps the camera stream open and continuously reads frames in background.
     Control loop can grab the latest frame instantly without HTTP overhead.
+    Frame rate is controlled via config.json camera.sample_rate_fps.
     """
 
     _instance: Optional["CameraStream"] = None
@@ -336,6 +350,14 @@ class CameraStream:
         self.lock = threading.Lock()
         self.error_count = 0
         self.frame_count = 0
+
+        # Load config for frame rate control
+        config = load_config()
+        camera_config = config.get("camera", {})
+        self.sample_rate_fps = camera_config.get("sample_rate_fps", 10)
+        self.frame_timeout_s = camera_config.get("frame_timeout_s", 3.0)
+        self.min_frame_interval = 1.0 / self.sample_rate_fps if self.sample_rate_fps > 0 else 0
+        self.last_stored_time = 0
 
     @classmethod
     def get_instance(cls, url: str = "http://192.168.4.1:81/stream") -> "CameraStream":
@@ -354,14 +376,15 @@ class CameraStream:
         self.thread = threading.Thread(target=self._stream_loop, daemon=True)
         self.thread.start()
 
-        # Wait up to 3 seconds for first frame
-        for _ in range(30):
+        # Wait for first frame (configurable timeout)
+        wait_iterations = int(self.frame_timeout_s * 10)
+        for _ in range(wait_iterations):
             if self.latest_frame is not None:
-                print(f"[CAMERA] Stream started, first frame received")
+                print(f"[CAMERA] Stream started at {self.sample_rate_fps} FPS (skip to save CPU)")
                 return True
             time.sleep(0.1)
 
-        print(f"[CAMERA] Warning: No frame received in 3s, continuing anyway")
+        print(f"[CAMERA] Warning: No frame received in {self.frame_timeout_s}s, continuing anyway")
         return True
 
     def stop(self):
@@ -429,10 +452,14 @@ class CameraStream:
                         )
 
                         if frame is not None:
-                            with self.lock:
-                                self.latest_frame = frame
-                                self.frame_time = time.time()
-                            self.frame_count += 1
+                            now = time.time()
+                            # Rate limiting: only store frame if enough time has passed
+                            if now - self.last_stored_time >= self.min_frame_interval:
+                                with self.lock:
+                                    self.latest_frame = frame
+                                    self.frame_time = now
+                                self.frame_count += 1
+                                self.last_stored_time = now
 
             except requests.exceptions.Timeout:
                 print(f"[CAMERA] Stream timeout, reconnecting...")

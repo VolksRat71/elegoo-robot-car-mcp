@@ -14,11 +14,14 @@ Calibrated thresholds from sample collection (2026-01-27):
 """
 
 import argparse
+import json
+import os
 import signal
 import sys
 import time
 from dataclasses import dataclass
 from enum import Enum
+from pathlib import Path
 from typing import Optional
 
 import numpy as np
@@ -28,6 +31,9 @@ from robot_client import RobotClient
 import requests
 import base64
 import io
+
+# Config file path
+CONFIG_PATH = Path(__file__).parent / "config.json"
 
 # Try to import vision models
 try:
@@ -47,12 +53,22 @@ except ImportError:
 
 # === Configuration ===
 
+def load_config_json() -> dict:
+    """Load configuration from JSON file."""
+    if CONFIG_PATH.exists():
+        with open(CONFIG_PATH) as f:
+            return json.load(f)
+    print(f"[WARN] Config file not found: {CONFIG_PATH}, using defaults")
+    return {}
+
+
 @dataclass
 class Config:
     # Robot connection
     robot_host: str = "192.168.4.1"
     robot_port: int = 100
     camera_url: str = "http://192.168.4.1:81/stream"
+    vision_service_url: str = "http://localhost:8765"
 
     # Thresholds (percentages)
     clear_threshold: float = 25.0
@@ -81,6 +97,50 @@ class Config:
     # Safety
     max_consecutive_stops: int = 3
     max_vision_failures: int = 5
+
+    @classmethod
+    def from_json(cls, mode: str = "normal") -> "Config":
+        """Load config from JSON file for specified driving mode."""
+        data = load_config_json()
+
+        # Start with defaults
+        config = cls()
+
+        # Load connection settings
+        conn = data.get("connection", {})
+        config.robot_host = conn.get("robot_host", config.robot_host)
+        config.robot_port = conn.get("robot_port", config.robot_port)
+        config.camera_url = conn.get("camera_url", config.camera_url)
+        config.vision_service_url = conn.get("vision_service_url", config.vision_service_url)
+
+        # Load mode-specific settings
+        modes = data.get("driving_modes", {})
+        mode_config = modes.get(mode, modes.get("normal", {}))
+
+        config.cruise_speed = mode_config.get("cruise_speed", config.cruise_speed)
+        config.slow_speed = mode_config.get("slow_speed", config.slow_speed)
+        config.turn_speed = mode_config.get("turn_speed", config.turn_speed)
+        config.reverse_speed = mode_config.get("reverse_speed", config.reverse_speed)
+        config.loop_interval_ms = mode_config.get("loop_interval_ms", config.loop_interval_ms)
+        config.drive_duration_ms = mode_config.get("drive_duration_ms", config.drive_duration_ms)
+        config.turn_degrees_small = mode_config.get("turn_degrees_small", config.turn_degrees_small)
+        config.turn_degrees_large = mode_config.get("turn_degrees_large", config.turn_degrees_large)
+        config.reverse_duration_ms = mode_config.get("reverse_duration_ms", config.reverse_duration_ms)
+        config.clear_threshold = mode_config.get("clear_threshold", config.clear_threshold)
+        config.obstacle_threshold = mode_config.get("obstacle_threshold", config.obstacle_threshold)
+        config.danger_threshold = mode_config.get("danger_threshold", config.danger_threshold)
+        config.wall_variance = mode_config.get("wall_variance", config.wall_variance)
+
+        # Load smoothing settings
+        smoothing = data.get("smoothing", {})
+        config.ema_alpha = smoothing.get("ema_alpha", config.ema_alpha)
+
+        # Load safety settings
+        safety = data.get("safety", {})
+        config.max_consecutive_stops = safety.get("max_consecutive_stops", config.max_consecutive_stops)
+        config.max_vision_failures = safety.get("max_vision_failures", config.max_vision_failures)
+
+        return config
 
 
 class Decision(Enum):
@@ -116,12 +176,10 @@ class DriverState:
 # === Camera Capture ===
 # Uses centralized vision service's camera endpoint
 
-VISION_SERVICE_URL = "http://localhost:8765"
-
-def capture_frame(camera_url: str) -> Optional[np.ndarray]:
+def capture_frame(vision_service_url: str) -> Optional[np.ndarray]:
     """Get latest frame from the vision service's camera endpoint."""
     try:
-        response = requests.get(f"{VISION_SERVICE_URL}/camera/capture", timeout=2.0)
+        response = requests.get(f"{vision_service_url}/camera/capture", timeout=2.0)
         if response.status_code == 200:
             data = response.json()
             if data.get("success") and data.get("image_base64"):
@@ -265,8 +323,8 @@ def run_driver(duration_s: int, config: Config, dry_run: bool = False):
         while state.running and time.time() < end_time:
             loop_start = time.time()
 
-            # Capture frame
-            frame = capture_frame(config.camera_url)
+            # Capture frame from vision service
+            frame = capture_frame(config.vision_service_url)
             if frame is None:
                 state.vision_failures += 1
                 if state.vision_failures > config.max_vision_failures:
@@ -386,20 +444,26 @@ def run_driver(duration_s: int, config: Config, dry_run: bool = False):
 def main():
     parser = argparse.ArgumentParser(description="Autonomous vision-based robot driver")
     parser.add_argument("--duration", type=int, default=30, help="Duration in seconds")
-    parser.add_argument("--cautious", action="store_true", help="Use extra cautious settings")
+    parser.add_argument("--mode", choices=["normal", "cautious"], default="normal",
+                        help="Driving mode (loads from config.json)")
+    parser.add_argument("--cautious", action="store_true", help="Shorthand for --mode cautious")
     parser.add_argument("--dry-run", action="store_true", help="Don't send motor commands")
-    parser.add_argument("--robot-host", default="192.168.4.1", help="Robot IP address")
+    parser.add_argument("--robot-host", help="Override robot IP address")
     args = parser.parse_args()
 
-    config = Config(robot_host=args.robot_host)
+    # Determine mode
+    mode = "cautious" if args.cautious else args.mode
 
-    if args.cautious:
-        config.cruise_speed = 25
-        config.slow_speed = 18
-        config.clear_threshold = 30
-        config.obstacle_threshold = 35
-        config.drive_duration_ms = 600  # Even more overlap for smoother cautious driving
-        print("[CONFIG] Using cautious settings")
+    # Load config from JSON
+    config = Config.from_json(mode)
+    print(f"[CONFIG] Loaded '{mode}' mode from {CONFIG_PATH}")
+    print(f"[CONFIG] Speeds: cruise={config.cruise_speed}, slow={config.slow_speed}")
+    print(f"[CONFIG] Timing: loop={config.loop_interval_ms}ms, drive={config.drive_duration_ms}ms")
+    print(f"[CONFIG] Thresholds: clear={config.clear_threshold}%, obstacle={config.obstacle_threshold}%, danger={config.danger_threshold}%")
+
+    # Allow override of robot host
+    if args.robot_host:
+        config.robot_host = args.robot_host
 
     run_driver(args.duration, config, dry_run=args.dry_run)
 

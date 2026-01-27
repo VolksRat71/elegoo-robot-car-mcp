@@ -1,0 +1,55 @@
+{
+  "camera": {
+    "sample_rate_fps": 10,
+    "frame_timeout_s": 3.0
+  },
+
+  "driving_modes": {
+    "normal": {
+      "cruise_speed": 35,
+      "slow_speed": 25,
+      "turn_speed": 40,
+      "reverse_speed": 30,
+      "loop_interval_ms": 300,
+      "drive_duration_ms": 500,
+      "turn_degrees_small": 25,
+      "turn_degrees_large": 50,
+      "reverse_duration_ms": 300,
+      "clear_threshold": 25.0,
+      "obstacle_threshold": 40.0,
+      "danger_threshold": 60.0,
+      "wall_variance": 10.0
+    },
+    "cautious": {
+      "cruise_speed": 25,
+      "slow_speed": 18,
+      "turn_speed": 35,
+      "reverse_speed": 25,
+      "loop_interval_ms": 300,
+      "drive_duration_ms": 600,
+      "turn_degrees_small": 20,
+      "turn_degrees_large": 45,
+      "reverse_duration_ms": 350,
+      "clear_threshold": 35.0,
+      "obstacle_threshold": 45.0,
+      "danger_threshold": 65.0,
+      "wall_variance": 10.0
+    }
+  },
+
+  "smoothing": {
+    "ema_alpha": 0.4
+  },
+
+  "safety": {
+    "max_consecutive_stops": 3,
+    "max_vision_failures": 5
+  },
+
+  "connection": {
+    "robot_host": "192.168.4.1",
+    "robot_port": 100,
+    "camera_url": "http://192.168.4.1:81/stream",
+    "vision_service_url": "http://localhost:8765"
+  }
+}
