@@ -651,6 +651,198 @@ async def clear_store():
     return {"success": True, "message": "Grid and position cleared. Waypoints preserved."}
 
 
+# === Dashboard API Endpoints ===
+# These endpoints match the dashboard/API.md contract for real-time visualization
+
+
+class CommandRequest(BaseModel):
+    """Request body for /api/command endpoint."""
+    command: Literal["drive", "turn", "stop", "explore"]
+    params: Optional[dict] = None
+
+
+@app.get("/api/snapshot")
+async def dashboard_snapshot():
+    """
+    Combined snapshot for dashboard polling.
+    Returns robot state, camera frame, depth analysis, and object detection.
+    Designed to be polled every 1-2 seconds.
+    """
+    import time
+
+    robot = get_robot()
+    camera = get_camera()
+    store = get_store()
+
+    timestamp_ms = int(time.time() * 1000)
+    robot_connected = robot.is_connected()
+    vision_available = depth_estimator is not None and object_detector is not None
+
+    result = {
+        "timestamp": timestamp_ms,
+        "robot_connected": robot_connected,
+        "vision_available": vision_available,
+        "camera_image": None,
+        "depth_image": None,
+        "annotated_image": None,
+        "depth": None,
+        "detection": None,
+        "world_state": _build_world_state(robot, camera, store, timestamp_ms),
+    }
+
+    # Get camera frame
+    frame = camera.get_frame()
+    if frame is not None and vision_available:
+        # Convert to PIL for models
+        image = Image.fromarray(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB))
+
+        # Encode raw camera image
+        _, buffer = cv2.imencode('.jpg', frame, [cv2.IMWRITE_JPEG_QUALITY, 80])
+        result["camera_image"] = base64.b64encode(buffer).decode('utf-8')
+
+        # Run depth estimation
+        try:
+            depth_result = depth_estimator.estimate(image, include_image=True)
+            result["depth"] = {
+                "center_depth": depth_result.get("center_depth", 0),
+                "depth_zones": depth_result.get("depth_zones", {"left": 0, "center": 0, "right": 0}),
+                "image_size": {"width": frame.shape[1], "height": frame.shape[0]},
+            }
+            if "depth_image" in depth_result:
+                result["depth_image"] = depth_result["depth_image"]
+        except Exception as e:
+            logger.warning(f"Depth estimation failed: {e}")
+
+        # Run object detection
+        try:
+            detection_result = object_detector.detect(image, confidence_threshold=0.35, include_image=True)
+            detected = detection_result.get("detected_objects", [])
+
+            # Add bearing calculation for each object
+            img_width = frame.shape[1]
+            for obj in detected:
+                if "bbox" in obj:
+                    bbox = obj["bbox"]
+                    center_x = (bbox["x1"] + bbox["x2"]) / 2
+                    # -30 to +30 degrees based on position in frame
+                    obj["bearing_deg"] = round((center_x / img_width - 0.5) * 60, 1)
+                else:
+                    obj["bearing_deg"] = 0
+
+            result["detection"] = {
+                "detected_objects": detected,
+                "count": len(detected),
+            }
+            if "annotated_image" in detection_result:
+                result["annotated_image"] = detection_result["annotated_image"]
+        except Exception as e:
+            logger.warning(f"Object detection failed: {e}")
+
+    return result
+
+
+def _build_world_state(robot: RobotClient, camera, store, timestamp_ms: int) -> dict:
+    """Build WorldState object matching the API contract."""
+    metrics = robot.get_metrics()
+    pos = store.get_position()
+
+    return {
+        "schema_version": "1.0",
+        "timestamp_ms": timestamp_ms,
+
+        "autonomy_state": "IDLE",  # Updated by driver when running
+        "last_action": "none",
+        "stuck_counter": 0,
+
+        "geometry": {
+            "front_min_mm": 500,  # Placeholder - would come from depth
+            "scan_bins_mm": [],
+            "best_gap": None,
+        },
+
+        "semantics": {
+            "detected_objects": [],  # Populated from detection above
+            "current_place_tags": [],
+        },
+
+        "map_summary": {
+            "current_place": None,
+            "nearby_places": [],
+            "unexplored_frontiers": 0,
+            "loop_closure": {
+                "candidates": [],
+                "confidence": 0,
+            },
+        },
+
+        "confidence": {
+            "localization": 0.5,
+            "safety": 0.8,
+            "loop_closure": 0,
+        },
+
+        "health": {
+            "link_rtt_ms": metrics.get("avg_latency_ms", 0),
+            "command_age_ms": 0,
+            "dropped_frames": metrics.get("failures", 0),
+            "last_heartbeat_ms": 0,
+            "battery_voltage": 7.4,  # Placeholder
+            "queue_depth": 0,
+        },
+
+        "position": {
+            "x": pos.x,
+            "y": pos.y,
+            "heading": pos.heading,
+        },
+    }
+
+
+@app.post("/api/command")
+async def dashboard_command(request: CommandRequest):
+    """
+    Unified command interface for dashboard control.
+
+    Commands:
+        - drive: { direction, speed?, duration_ms? }
+        - turn: { degrees, speed? }
+        - stop: (no params)
+        - explore: { duration_s? }
+    """
+    robot = get_robot()
+    params = request.params or {}
+
+    try:
+        if request.command == "drive":
+            direction = params.get("direction", "stop")
+            speed = params.get("speed", 50)
+            duration_ms = params.get("duration_ms", 300)
+            result = robot.drive(direction, speed, duration_ms)
+            return {"success": result.get("success", False), "message": f"Driving {direction}"}
+
+        elif request.command == "turn":
+            degrees = params.get("degrees", 0)
+            speed = params.get("speed", 40)
+            result = robot.turn(degrees, speed)
+            return {"success": result.get("success", False), "message": f"Turning {degrees}°"}
+
+        elif request.command == "stop":
+            result = robot.stop()
+            return {"success": result.get("success", False), "message": "Stopped"}
+
+        elif request.command == "explore":
+            # This would start autonomous exploration
+            # For now, return not implemented
+            return {"success": False, "error": "Autonomous explore via API not yet implemented. Use vision driver."}
+
+        else:
+            return {"success": False, "error": f"Unknown command: {request.command}"}
+
+    except Exception as e:
+        logger.error(f"Command error: {e}")
+        return {"success": False, "error": str(e)}
+
+
 # === Combined Status ===
 
 

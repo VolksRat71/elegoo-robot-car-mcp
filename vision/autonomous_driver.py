@@ -464,13 +464,27 @@ def make_decision(depth: DepthZones, state: DriverState, config: Config) -> Deci
 
 
 def execute_decision(decision: Decision, robot: RobotClient, config: Config) -> bool:
-    """Execute a navigation decision."""
+    """
+    Execute a navigation decision using smooth continuous motion.
+
+    For forward/backward movement, uses drive_no_wait() which returns immediately.
+    This allows the control loop to run at full speed without blocking on motor
+    commands. The robot keeps moving until we send a different command.
+
+    For turns, still blocks briefly for accuracy (turns need precise timing).
+    """
     result = None
+
     if decision == Decision.FORWARD:
-        result = robot.drive("forward", config.cruise_speed, config.drive_duration_ms)
+        # Non-blocking: motors keep running until next command
+        result = robot.drive_no_wait("forward", config.cruise_speed)
     elif decision == Decision.FORWARD_SLOW:
-        result = robot.drive("forward", config.slow_speed, config.drive_duration_ms)
+        result = robot.drive_no_wait("forward", config.slow_speed)
+    elif decision == Decision.REVERSE:
+        # Non-blocking reverse
+        result = robot.drive_no_wait("backward", config.reverse_speed)
     elif decision == Decision.TURN_LEFT:
+        # Turns still block for accuracy
         result = robot.turn(-config.turn_degrees_small, config.turn_speed)
     elif decision == Decision.TURN_RIGHT:
         result = robot.turn(config.turn_degrees_small, config.turn_speed)
@@ -478,8 +492,8 @@ def execute_decision(decision: Decision, robot: RobotClient, config: Config) -> 
         result = robot.turn(-config.turn_degrees_large, config.turn_speed)
     elif decision == Decision.TURN_RIGHT_LARGE:
         result = robot.turn(config.turn_degrees_large, config.turn_speed)
-    elif decision == Decision.REVERSE:
-        result = robot.drive("backward", config.reverse_speed, config.reverse_duration_ms)
+    elif decision == Decision.STOP:
+        result = robot.stop()
     else:
         result = robot.stop()
 

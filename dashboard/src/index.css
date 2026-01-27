@@ -384,7 +384,7 @@ body {
   transform: translateY(-50%);
 }
 
-/* Scanline effect for video */
+/* Scanline effect for video - animated */
 .bp-scanlines::after {
   content: '';
   position: absolute;
@@ -393,10 +393,55 @@ body {
     0deg,
     transparent,
     transparent 2px,
-    rgba(0, 0, 0, 0.15) 2px,
-    rgba(0, 0, 0, 0.15) 4px
+    rgba(0, 0, 0, 0.12) 2px,
+    rgba(0, 0, 0, 0.12) 4px
   );
   pointer-events: none;
+  animation: scanlines 8s linear infinite;
+}
+
+/* Moving scan bar */
+.bp-scanlines::before {
+  content: '';
+  position: absolute;
+  left: 0;
+  right: 0;
+  height: 8px;
+  background: linear-gradient(
+    180deg,
+    transparent,
+    rgba(74, 124, 184, 0.08) 50%,
+    transparent
+  );
+  animation: scan-bar 3s ease-in-out infinite;
+  pointer-events: none;
+  z-index: 1;
+}
+
+@keyframes scanlines {
+  0% {
+    background-position: 0 0;
+  }
+  100% {
+    background-position: 0 100px;
+  }
+}
+
+@keyframes scan-bar {
+  0%, 100% {
+    top: -8px;
+    opacity: 0;
+  }
+  10% {
+    opacity: 1;
+  }
+  90% {
+    opacity: 1;
+  }
+  100% {
+    top: 100%;
+    opacity: 0;
+  }
 }
 
 /* Loading spinner */
@@ -439,4 +484,47 @@ body {
 .bp-tag.error {
   border-color: var(--bp-red);
   color: var(--bp-red);
+}
+
+/* Detection row animation */
+.bp-detection-row {
+  animation: detection-in 0.3s ease-out;
+}
+
+@keyframes detection-in {
+  0% {
+    opacity: 0;
+    transform: translateX(-8px);
+  }
+  100% {
+    opacity: 1;
+    transform: translateX(0);
+  }
+}
+
+/* Staggered entrance for multiple items */
+.bp-detection-row:nth-child(1) { animation-delay: 0ms; }
+.bp-detection-row:nth-child(2) { animation-delay: 50ms; }
+.bp-detection-row:nth-child(3) { animation-delay: 100ms; }
+.bp-detection-row:nth-child(4) { animation-delay: 150ms; }
+.bp-detection-row:nth-child(5) { animation-delay: 200ms; }
+.bp-detection-row:nth-child(6) { animation-delay: 250ms; }
+.bp-detection-row:nth-child(7) { animation-delay: 300ms; }
+.bp-detection-row:nth-child(8) { animation-delay: 350ms; }
+
+/* Pulse effect for new/updated detections */
+.bp-detection-pulse {
+  animation: detection-pulse 0.6s ease-out;
+}
+
+@keyframes detection-pulse {
+  0% {
+    box-shadow: 0 0 0 0 rgba(42, 157, 143, 0.4);
+  }
+  70% {
+    box-shadow: 0 0 0 6px rgba(42, 157, 143, 0);
+  }
+  100% {
+    box-shadow: 0 0 0 0 rgba(42, 157, 143, 0);
+  }
 }

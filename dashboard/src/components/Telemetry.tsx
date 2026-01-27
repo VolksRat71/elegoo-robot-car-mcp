@@ -151,7 +151,7 @@ function DetectionRow({ detection }: { detection: DetectedObject }) {
   const color = getConfidenceColor(detection.confidence);
 
   return (
-    <div className="flex items-center gap-2 p-1.5 bg-[var(--bp-bg)] border border-[var(--bp-line-dim)]">
+    <div className="bp-detection-row flex items-center gap-2 p-1.5 bg-[var(--bp-bg)] border border-[var(--bp-line-dim)]">
       {/* Confidence dot */}
       <div
         className="w-2 h-2 rounded-full flex-shrink-0"

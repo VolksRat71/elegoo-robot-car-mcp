@@ -6,7 +6,9 @@ dist/
 *.js.map
 
 # Data files
+*.db
 server/data/*.db
+vision/*.db
 
 # Environment
 .env

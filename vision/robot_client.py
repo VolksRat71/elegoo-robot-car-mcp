@@ -254,6 +254,49 @@ class RobotClient:
 
         return {"success": success, "direction": direction, "speed": speed, "duration_ms": duration_ms}
 
+    def drive_no_wait(self, direction: str, speed: int = 50) -> dict:
+        """
+        Start driving without waiting - returns immediately.
+
+        This is the key method for smooth continuous motion. The motors will
+        keep running until either:
+        1. A new command is sent (including stop)
+        2. The ESP32 times out (~500ms of no new commands)
+
+        For smooth motion, call this repeatedly (every 200-300ms) with the
+        same or new direction before the previous command expires.
+
+        Args:
+            direction: "forward", "backward", "left", "right"
+            speed: 0-100
+
+        Returns:
+            dict with success status
+        """
+        mapped_speed = int((speed / 100) * 250)
+
+        # Don't send STANDBY - it causes a brief pause
+        # Just send the motor command directly
+
+        if direction == "forward":
+            success, latency, _ = self.send_raw(self.CMD_MOTOR_CONTROL, 0, mapped_speed, self.MOTOR_FORWARD)
+        elif direction == "backward":
+            success, latency, _ = self.send_raw(self.CMD_MOTOR_CONTROL, 0, mapped_speed, self.MOTOR_BACKWARD)
+        elif direction == "left":
+            # Turn left while stationary: right forward, left backward
+            self.send_raw(self.CMD_MOTOR_CONTROL, 1, mapped_speed, self.MOTOR_FORWARD)
+            success, latency, _ = self.send_raw(self.CMD_MOTOR_CONTROL, 2, mapped_speed, self.MOTOR_BACKWARD)
+        elif direction == "right":
+            # Turn right while stationary: left forward, right backward
+            self.send_raw(self.CMD_MOTOR_CONTROL, 2, mapped_speed, self.MOTOR_FORWARD)
+            success, latency, _ = self.send_raw(self.CMD_MOTOR_CONTROL, 1, mapped_speed, self.MOTOR_BACKWARD)
+        else:
+            return {"success": False, "error": f"Unknown direction: {direction}"}
+
+        # NO time.sleep() - return immediately
+        # NO self.stop() - let motors keep running
+        return {"success": success, "direction": direction, "speed": speed}
+
     def turn(self, degrees: int, speed: int = 50) -> dict:
         """Turn in place.
 
