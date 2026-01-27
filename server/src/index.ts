@@ -10,10 +10,17 @@ import {
 } from "@modelcontextprotocol/sdk/types.js";
 import { z } from "zod";
 import { createServer } from "http";
+import { readFile, stat } from "fs/promises";
+import { join, extname } from "path";
+import { fileURLToPath } from "url";
 
 import { getStockRobotClient } from "./robot-client-stock.js";
 import { getMapStore } from "./map-store.js";
 import { getVisionServiceManager } from "./vision-service-manager.js";
+import { handleDashboardApi } from "./dashboard-api.js";
+
+// Get directory of this file for resolving static assets
+const __dirname = fileURLToPath(new URL(".", import.meta.url));
 
 // Use stock client for Elegoo's built-in firmware
 const getRobotClient = getStockRobotClient;
@@ -266,15 +273,56 @@ async function main() {
     console.error("Robot disconnected - will attempt to reconnect");
   });
 
+  // MIME types for static file serving
+  const mimeTypes: Record<string, string> = {
+    ".html": "text/html",
+    ".js": "application/javascript",
+    ".css": "text/css",
+    ".json": "application/json",
+    ".png": "image/png",
+    ".jpg": "image/jpeg",
+    ".svg": "image/svg+xml",
+    ".ico": "image/x-icon",
+    ".woff": "font/woff",
+    ".woff2": "font/woff2",
+  };
+
+  // Dashboard static files directory (built React app)
+  const dashboardDir = join(__dirname, "../../dashboard/dist");
+
+  // Serve static file from dashboard
+  async function serveStaticFile(
+    res: import("http").ServerResponse,
+    filePath: string
+  ): Promise<boolean> {
+    try {
+      const fullPath = join(dashboardDir, filePath);
+      const stats = await stat(fullPath);
+
+      if (stats.isFile()) {
+        const content = await readFile(fullPath);
+        const ext = extname(filePath).toLowerCase();
+        const contentType = mimeTypes[ext] || "application/octet-stream";
+        res.writeHead(200, { "Content-Type": contentType });
+        res.end(content);
+        return true;
+      }
+    } catch {
+      // File not found
+    }
+    return false;
+  }
+
   if (useHttp) {
     // HTTP/SSE mode - allows watch/restart without breaking Claude connection
     const transports: Map<string, SSEServerTransport> = new Map();
 
     const httpServer = createServer(async (req, res) => {
       const url = new URL(req.url || "", `http://localhost:${httpPort}`);
+      const pathname = url.pathname;
 
-      // Handle SSE connections
-      if (url.pathname === "/sse") {
+      // Handle SSE connections (MCP protocol)
+      if (pathname === "/sse") {
         console.error("New SSE connection");
         const transport = new SSEServerTransport("/message", res);
         transports.set(transport.sessionId, transport);
@@ -288,8 +336,8 @@ async function main() {
         return;
       }
 
-      // Handle messages
-      if (url.pathname === "/message" && req.method === "POST") {
+      // Handle MCP messages
+      if (pathname === "/message" && req.method === "POST") {
         const sessionId = url.searchParams.get("sessionId");
         const transport = sessionId ? transports.get(sessionId) : null;
 
@@ -306,10 +354,26 @@ async function main() {
         return;
       }
 
+      // Handle Dashboard API requests (/api/*)
+      if (pathname.startsWith("/api/")) {
+        const handled = await handleDashboardApi(req, res, pathname);
+        if (handled) return;
+      }
+
       // Health check
-      if (url.pathname === "/health") {
+      if (pathname === "/health") {
         res.writeHead(200, { "Content-Type": "application/json" });
         res.end(JSON.stringify({ status: "ok", robot: robot.isConnected() }));
+        return;
+      }
+
+      // Serve dashboard static files
+      // Try exact path first
+      let filePath = pathname === "/" ? "/index.html" : pathname;
+      if (await serveStaticFile(res, filePath)) return;
+
+      // For SPA routing, serve index.html for unknown paths
+      if (!pathname.includes(".") && (await serveStaticFile(res, "/index.html"))) {
         return;
       }
 
@@ -319,6 +383,7 @@ async function main() {
 
     httpServer.listen(httpPort, () => {
       console.error(`MCP server running on http://localhost:${httpPort}/sse`);
+      console.error(`Dashboard UI: http://localhost:${httpPort}/`);
     });
   } else {
     // Stdio mode - standard MCP transport
