@@ -205,11 +205,13 @@ function zodFieldToJsonSchema(field: z.ZodTypeAny): Record<string, unknown> {
 async function main() {
   const robotHost = process.env.ROBOT_HOST || "192.168.4.1";
   const robotPort = parseInt(process.env.ROBOT_PORT || "100");
+  const visionUrl = process.env.VISION_SERVICE_URL || "http://localhost:8765";
   const useHttp = process.argv.includes("--http") || process.env.MCP_HTTP === "true";
   const httpPort = parseInt(process.env.MCP_PORT || "3456");
 
   console.error(`Elegoo Robot Car MCP Server starting...`);
   console.error(`Robot: ${robotHost}:${robotPort} (stock Elegoo firmware)`);
+  console.error(`Vision service: ${visionUrl}`);
   console.error(`Transport: ${useHttp ? `HTTP/SSE on port ${httpPort}` : "stdio"}`);
 
   // Initialize robot client for stock Elegoo firmware (TCP port 100)

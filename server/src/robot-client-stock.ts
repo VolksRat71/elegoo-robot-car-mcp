@@ -40,8 +40,8 @@ const CMD = {
   STANDBY: 100,
 };
 
-// Direction values for N=3 (CAR_DIRECTION)
-const DIR = {
+// Direction values for N=3 (CAR_DIRECTION) - reserved for arc turning if needed
+const _DIR = {
   FORWARD: 0,
   BACKWARD: 1,
   LEFT: 2,
@@ -582,17 +582,28 @@ export class StockRobotClient extends EventEmitter {
       // Estimate duration based on degrees (rough approximation)
       const duration = Math.abs(degrees) * 10; // ~10ms per degree at full speed
 
+      // Motor direction values for N=1 (MOTOR_CONTROL)
+      const MOTOR_DIR = { stop: 0, forward: 1, backward: 2 };
+
       try {
         // Enter standby first
         this.sendCommandRaw(CMD.STANDBY);
 
-        // Use N=3 with left/right direction
-        const direction = degrees > 0 ? DIR.RIGHT : DIR.LEFT;
-        this.sendCommandRaw(CMD.CAR_DIRECTION, direction, mappedSpeed);
+        // Use N=1 (MOTOR_CONTROL) with opposite motor directions for in-place rotation
+        // This is the same approach as drive() for left/right
+        if (degrees > 0) {
+          // Turn right (clockwise): Left motor forward, right motor backward
+          this.sendCommandRaw(CMD.MOTOR_CONTROL, 2, mappedSpeed, MOTOR_DIR.forward); // Left forward
+          this.sendCommandRaw(CMD.MOTOR_CONTROL, 1, mappedSpeed, MOTOR_DIR.backward); // Right backward
+        } else {
+          // Turn left (counter-clockwise): Right motor forward, left motor backward
+          this.sendCommandRaw(CMD.MOTOR_CONTROL, 1, mappedSpeed, MOTOR_DIR.forward); // Right forward
+          this.sendCommandRaw(CMD.MOTOR_CONTROL, 2, mappedSpeed, MOTOR_DIR.backward); // Left backward
+        }
 
         // Wait for turn duration then stop (within queued command)
         await new Promise((resolve) => setTimeout(resolve, duration));
-        this.sendCommandRaw(CMD.CAR_DIRECTION, DIR.STOP, 0);
+        this.sendCommandRaw(CMD.MOTOR_CONTROL, 0, 0, MOTOR_DIR.stop);
 
         return {
           success: true,

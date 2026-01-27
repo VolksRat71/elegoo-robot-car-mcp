@@ -29,7 +29,9 @@ export async function observe(params: z.infer<typeof observeSchema>): Promise<st
   const logger = getSessionLogger();
 
   try {
-    const worldState = await buildWorldState();
+    // In burst mode, include vision analysis
+    const includeVision = params.mode === "burst";
+    const worldState = await buildWorldState({ includeVision });
 
     // Log the WorldState
     logger.logWorldState(worldState);
@@ -38,8 +40,7 @@ export async function observe(params: z.infer<typeof observeSchema>): Promise<st
     const formatted = formatWorldState(worldState);
 
     if (params.mode === "burst") {
-      // In burst mode, we could also capture a camera image
-      // For now, just return the full WorldState as JSON
+      // In burst mode, return full WorldState including vision results
       return `${formatted}\n\n[Full WorldState JSON]\n${JSON.stringify(worldState, null, 2)}`;
     }
 

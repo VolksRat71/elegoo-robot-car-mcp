@@ -8,6 +8,8 @@
 import { getStockRobotClient } from "../robot-client-stock.js";
 import { getMapStore } from "../map-store.js";
 import { getAutonomyStateMachine } from "./state-machine.js";
+import { getVisionClient, type VisionAnalysisResult } from "../vision-client.js";
+import { captureImage } from "../tools/vision.js";
 
 export type AutonomyState =
   | "IDLE"
@@ -77,12 +79,25 @@ export interface WorldState {
 }
 
 /**
- * Build the current WorldState by collecting data from all sources
+ * Options for building WorldState
  */
-export async function buildWorldState(): Promise<WorldState> {
+export interface BuildWorldStateOptions {
+  /**
+   * If true, capture image and run vision analysis (depth + detection).
+   * This adds latency but provides semantic information.
+   */
+  includeVision?: boolean;
+}
+
+/**
+ * Build the current WorldState by collecting data from all sources
+ * @param options Configuration options for building WorldState
+ */
+export async function buildWorldState(options: BuildWorldStateOptions = {}): Promise<WorldState> {
   const robot = getStockRobotClient();
   const mapStore = getMapStore();
   const stateMachine = getAutonomyStateMachine();
+  const visionClient = getVisionClient();
 
   // Get distance reading
   let frontMinMm = 9999;
@@ -110,6 +125,45 @@ export async function buildWorldState(): Promise<WorldState> {
   // Get position from map store (reserved for future use)
   const _position = mapStore.getPosition();
 
+  // Vision analysis (optional)
+  let detectedObjects: { label: string; bearing_deg: number; confidence: number }[] = [];
+  let currentPlaceTags: string[] = [];
+
+  if (options.includeVision) {
+    const visionAvailable = await visionClient.isAvailable();
+    if (visionAvailable) {
+      try {
+        // Capture image from robot camera
+        const imageResult = await captureImage();
+        const imageContent = imageResult.content.find((c) => c.type === "image");
+
+        if (imageContent && imageContent.type === "image") {
+          // Analyze with vision service
+          const visionResult = await visionClient.analyze(imageContent.data, {
+            runDepth: true,
+            runDetection: true,
+          });
+
+          if (visionResult.success && visionResult.detection) {
+            // Map detected objects to WorldState format
+            detectedObjects = visionResult.detection.detected_objects.map((obj) => ({
+              label: obj.label,
+              bearing_deg: obj.bearing_deg,
+              confidence: obj.confidence,
+            }));
+          }
+
+          // Derive place tags from depth and detection results
+          if (visionResult.success) {
+            currentPlaceTags = derivePlaceTags(visionResult);
+          }
+        }
+      } catch (error) {
+        console.error("Vision analysis failed:", error);
+      }
+    }
+  }
+
   // Build WorldState
   const worldState: WorldState = {
     schema_version: "1.0",
@@ -127,10 +181,10 @@ export async function buildWorldState(): Promise<WorldState> {
       best_gap: null, // Cannot determine without scan bins
     },
 
-    // Semantics - empty until vision integration
+    // Semantics - populated from vision when available
     semantics: {
-      detected_objects: [],
-      current_place_tags: [],
+      detected_objects: detectedObjects,
+      current_place_tags: currentPlaceTags,
     },
 
     // Map summary - minimal pre-laser version
@@ -163,6 +217,51 @@ export async function buildWorldState(): Promise<WorldState> {
   };
 
   return worldState;
+}
+
+/**
+ * Derive place tags from vision analysis results
+ */
+function derivePlaceTags(visionResult: VisionAnalysisResult): string[] {
+  const tags: string[] = [];
+
+  // Analyze depth zones
+  if (visionResult.depth) {
+    const { left, center, right } = visionResult.depth.depth_zones;
+    const avgDepth = (left + center + right) / 3;
+
+    if (avgDepth < 0.3) {
+      tags.push("open_area");
+    } else if (avgDepth > 0.7) {
+      tags.push("cluttered");
+    }
+
+    // Check for corridor-like depth pattern (walls on sides, clear ahead)
+    if (left > 0.6 && right > 0.6 && center < 0.4) {
+      tags.push("hallway");
+    }
+  }
+
+  // Analyze detected objects
+  if (visionResult.detection) {
+    const labels = visionResult.detection.detected_objects.map((o) => o.label);
+
+    // Infer room type from detected objects
+    if (labels.includes("chair") || labels.includes("couch") || labels.includes("tv")) {
+      tags.push("living_space");
+    }
+    if (labels.includes("bed")) {
+      tags.push("bedroom");
+    }
+    if (labels.includes("dining table") || labels.includes("refrigerator")) {
+      tags.push("kitchen_area");
+    }
+    if (labels.includes("person") || labels.includes("dog") || labels.includes("cat")) {
+      tags.push("occupied");
+    }
+  }
+
+  return tags;
 }
 
 /**
