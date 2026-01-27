@@ -39,6 +39,8 @@ See [KNOWN_ISSUES.md](./KNOWN_ISSUES.md) for details.
 | **VL53L1X ToF driver** | Waiting | Hardware ordered |
 | Safety envelope | Blocked | Needs ToF for reliable distance |
 | Watchdog timeout | Blocked | After ToF integration |
+| WorldState schema v1 | Not started | Lock contract early |
+| WorldState logging | Not started | SQLite + JSONL replay |
 
 **Next steps when VL53L1X arrives:**
 1. Wire to A4 (SDA), A5 (SCL), 3.3V, GND
@@ -46,22 +48,37 @@ See [KNOWN_ISSUES.md](./KNOWN_ISSUES.md) for details.
 3. Replace `DeviceDriverSet_ULTRASONIC` with ToF calls
 4. Add safety envelope (hard stop < 10cm, slow < 25cm)
 5. Add watchdog (stop if no command for 300-500ms)
+6. Implement WorldState schema v1 in TypeScript
+7. Add SQLite logging for replay
 
 ---
 
-## Phase 2: Host as Tactical Brain
+## Phase 2: Host as Tactical Brain + MCP Contract
 
-**Goal:** Host handles all real-time decisions. LLM can pause without affecting motion.
+**Goal:** Host handles all real-time decisions. Lock MCP tool contract early (even if behavior is primitive).
 
 | Task | Status | Depends On |
 |------|--------|------------|
 | Time-bounded motion primitives | Not started | Phase 1 |
-| Gap following from scan bins | Not started | ToF scans |
-| Automatic recovery behaviors | Not started | — |
+| Local costmap (~2m x 2m) | Not started | ToF scans |
+| Host autonomy state machine | Not started | — |
+| Gap following from scan bins | Not started | Local costmap |
+| Automatic recovery behaviors | Not started | State machine |
 | Speed limiting near obstacles | Not started | ToF |
 | Action timeouts | Not started | — |
+| **MCP tools stubbed** | Not started | WorldState schema |
 
-**Key deliverable:** `SET_TWIST(v_mm_s, w_deg_s, duration_ms)` command that executes locally with safety enforcement.
+**Key insight:** Stub `explore()`, `goto()`, `observe()` early with simple behavior. The LLM starts using the real API immediately; autonomy improves behind it.
+
+### MCP Tools to Implement (Phase 2)
+
+| Tool | Phase 2 Behavior | Future Behavior |
+|------|------------------|-----------------|
+| `explore(duration_s)` | Random walk + basic obstacle avoidance | Frontier-based exploration |
+| `goto(place_id)` | Returns "not supported yet" | A* path through place graph |
+| `observe()` | Returns WorldState (geometry only) | Full WorldState with semantics |
+| `stop()` | Immediate halt | Same |
+| `list_places()` | Returns empty list | Returns place graph nodes |
 
 ---
 
@@ -71,36 +88,18 @@ See [KNOWN_ISSUES.md](./KNOWN_ISSUES.md) for details.
 
 | Task | Status | Depends On |
 |------|--------|------------|
-| Place node creation | Not started | ToF scans |
-| Edge creation between places | Not started | Odometry or timing |
+| Place node creation | Not started | ToF fingerprints |
+| Edge creation between places | Not started | Movement tracking |
 | Loop closure detection | Not started | Place signatures |
-| SQLite persistence | Not started | — |
+| Loop closure confidence scoring | Not started | Multiple matching signals |
+| SQLite persistence (places + edges) | Not started | Phase 1 schema |
 | Semantic labeling (vision) | Not started | Camera integration |
 
-**Key insight:** Topological map (place graph) is more robust to drift and easier for LLMs to reason about than pure occupancy grids.
+**Key insight:** Place Graph is the LLM-facing map. Local costmap (from Phase 2) is internal.
 
 ---
 
-## Phase 4: Full MCP Interface
-
-**Goal:** LLM uses high-level intent tools, not motor commands.
-
-| Tool | Status | Description |
-|------|--------|-------------|
-| `explore()` | Not started | Autonomous frontier exploration |
-| `goto(place_id)` | Not started | Place-to-place navigation |
-| `observe()` | Not started | Structured environment summary |
-| `list_places()` | Not started | Get known locations |
-| `describe_place()` | Not started | Details about a place |
-| `set_constraints()` | Not started | Speed limits, no-go zones |
-
-**Current tools to deprecate (hide from LLM):**
-- `drive()` — too low-level
-- `get_distance()` — raw sensor data
-
----
-
-## Phase 5: Experience & Learning
+## Phase 4: Experience & Learning
 
 **Goal:** Robot gets better at roaming over time.
 
@@ -114,7 +113,7 @@ See [KNOWN_ISSUES.md](./KNOWN_ISSUES.md) for details.
 
 ---
 
-## Phase 6: Encoders
+## Phase 5: Encoders
 
 **Goal:** Improve reliability without changing MCP contract.
 
@@ -139,6 +138,27 @@ See [KNOWN_ISSUES.md](./KNOWN_ISSUES.md) for details.
 
 ---
 
+## Host Autonomy State Machine (Target)
+
+```
+IDLE → EXECUTING → AVOIDING → RECOVERING → RELOCALIZING → STUCK
+```
+
+See [ARCHITECTURE.md](./ARCHITECTURE.md#host-autonomy-state-machine) for full diagram and transitions.
+
+---
+
+## Debug Tools (Gated)
+
+These remain available behind a "debug mode" flag, not exposed to LLM by default:
+
+| Tool | Purpose |
+|------|---------|
+| `move(v, w, duration)` | Direct motion (time-bounded, safety-enforced) |
+| `get_raw_telemetry()` | Raw sensor dump |
+
+---
+
 ## Technical Debt
 
 - [ ] Unit tests for robot client
@@ -146,6 +166,7 @@ See [KNOWN_ISSUES.md](./KNOWN_ISSUES.md) for details.
 - [ ] TypeScript strict mode
 - [ ] Better error types
 - [ ] Logging configuration
+- [ ] Replay tooling (playback from JSONL)
 
 ---
 
@@ -156,3 +177,4 @@ See [KNOWN_ISSUES.md](./KNOWN_ISSUES.md) for details.
 - ArUco markers for localization
 - Home Assistant integration
 - Multi-robot coordination
+- Voice control via LLM

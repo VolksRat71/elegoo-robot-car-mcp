@@ -71,11 +71,12 @@ The key principle:
 | Responsibility | Description |
 |----------------|-------------|
 | Sensor fusion | Combine ToF, encoders (future), vision metadata |
-| Mapping | Place graph or occupancy grid |
+| Mapping | Place graph (global) + local costmap (tactical) |
 | Localization | Position estimation with uncertainty |
 | Path selection | A*, frontier exploration, recovery behaviors |
 | Memory | Experience accumulation, place visit history |
 | Behavior execution | Translate high-level intent into motion primitives |
+| Health monitoring | Track link quality, command latency, system load |
 
 **Guarantee:**
 > The LLM never has to reason about PWM, jitter, sensor noise, or timing.
@@ -89,6 +90,7 @@ The key principle:
 - Structured summaries (not raw streams)
 - Place descriptions and semantic labels
 - Confidence levels for localization and safety
+- Health/degradation warnings
 
 ---
 
@@ -151,45 +153,139 @@ set_constraints({
 })
 ```
 
-### Observations (Host → LLM)
-
-Structured summaries, not raw streams:
-
-```typescript
-{
-  robot_state: {
-    mode: "exploring" | "navigating" | "idle" | "stuck",
-    last_action: string,
-    stuck_counter: number
-  },
-  geometry: {
-    front_min_mm: number,
-    scan_bins_mm: number[],
-    best_gap: { bearing: number, width_mm: number }
-  },
-  semantics: {
-    detected_objects: { label: string, bearing: number, confidence: number }[],
-    current_place_tags: string[]  // "hallway", "open_area", "cluttered"
-  },
-  map_summary: {
-    current_place: string,
-    nearby_places: string[],
-    unexplored_frontiers: number
-  },
-  confidence: {
-    localization: number,  // 0-1
-    safety: number         // 0-1
-  }
-}
+**Debug Tools (gated, not default LLM tools):**
+```
+move(v_mm_s, w_deg_s, duration_ms)  → Direct motion (time-bounded, safety-enforced)
+get_raw_telemetry()                 → Raw sensor dump for debugging
 ```
 
-LLM can request richer data explicitly with `observe(mode="burst")`.
+These escape hatches remain available behind a "debug mode" flag but are not exposed in normal MCP tool listings.
 
 ---
 
-## Mapping Approach: Place Graph
+### WorldState Schema (v1)
 
-Instead of pure geometric SLAM (which drifts and is hard for LLMs to reason about), use a **topological Place Graph**:
+Lock this contract early. Improvements happen behind it.
+
+```typescript
+interface WorldState {
+  // Schema version for compatibility
+  schema_version: "1.0";
+  timestamp_ms: number;
+
+  // Robot state machine
+  autonomy_state: "IDLE" | "EXECUTING" | "AVOIDING" | "RECOVERING" | "RELOCALIZING" | "STUCK";
+  last_action: string;
+  stuck_counter: number;
+
+  // Geometry (tactical)
+  geometry: {
+    front_min_mm: number;
+    scan_bins_mm: number[];           // e.g., 7 bins at 30° intervals
+    best_gap: {
+      bearing_deg: number;
+      width_mm: number;
+    } | null;
+  };
+
+  // Semantics (from vision, when available)
+  semantics: {
+    detected_objects: {
+      label: string;
+      bearing_deg: number;
+      confidence: number;
+    }[];
+    current_place_tags: string[];     // "hallway", "open_area", "cluttered"
+  };
+
+  // Map summary (strategic)
+  map_summary: {
+    current_place: string | null;
+    nearby_places: string[];
+    unexplored_frontiers: number;
+    loop_closure: {
+      candidates: { place_id: string; score: number }[];
+      confidence: number;
+    };
+  };
+
+  // Confidence levels
+  confidence: {
+    localization: number;             // 0-1
+    safety: number;                   // 0-1
+    loop_closure: number;             // 0-1
+  };
+
+  // Health & timing (for degraded-mode decisions)
+  health: {
+    link_rtt_ms: number;
+    command_age_ms: number;
+    dropped_frames: number;
+    last_heartbeat_ms: number;
+    battery_voltage: number;
+    cpu_load: number;                 // host-side
+    queue_depth: number;              // pending commands
+  };
+}
+```
+
+LLM receives this via `observe()`. Can request `observe(mode="burst")` for richer data (e.g., camera stills, full scan array).
+
+---
+
+## Host Autonomy State Machine
+
+The host runs a state machine independent of LLM timing:
+
+```
+                    ┌──────────────┐
+                    │     IDLE     │
+                    └──────┬───────┘
+                           │ goal received
+                           ▼
+                    ┌──────────────┐
+         ┌─────────│  EXECUTING   │◄────────────┐
+         │         └──────┬───────┘             │
+         │                │ obstacle_abort      │ recovery success
+         │                ▼                     │
+         │         ┌──────────────┐             │
+         │         │   AVOIDING   │─────────────┤
+         │         └──────┬───────┘             │
+         │                │ repeated aborts     │
+         │                ▼                     │
+         │         ┌──────────────┐             │
+         │         │  RECOVERING  │─────────────┘
+         │         └──────┬───────┘
+         │                │ low confidence
+         │                ▼
+         │         ┌──────────────┐
+         │         │ RELOCALIZING │
+         │         └──────┬───────┘
+         │                │ persistent failure
+         │                ▼
+         │         ┌──────────────┐
+         └────────►│    STUCK     │
+                   └──────────────┘
+```
+
+| State | Behavior | Exits To |
+|-------|----------|----------|
+| IDLE | Waiting for goal | EXECUTING |
+| EXECUTING | Following path, gap-following | AVOIDING, goal reached → IDLE |
+| AVOIDING | Immediate obstacle response | EXECUTING (clear), RECOVERING (repeated) |
+| RECOVERING | Backup → turn → rescan | EXECUTING (success), RELOCALIZING (low confidence) |
+| RELOCALIZING | Scan + loop closure attempt | EXECUTING (matched), STUCK (failed) |
+| STUCK | Halt, report to LLM | IDLE (new goal or manual intervention) |
+
+The LLM sees `autonomy_state` in WorldState and can adapt strategy (e.g., "if stuck, try different approach").
+
+---
+
+## Mapping: Hybrid Approach
+
+### Place Graph (Global / LLM-facing)
+
+The **primary map structure** for long-term memory and LLM reasoning:
 
 ```
     [hallway_1] ──── [living_room] ──── [kitchen]
@@ -197,46 +293,45 @@ Instead of pure geometric SLAM (which drifts and is hard for LLMs to reason abou
     [bedroom_1]      [front_door]
 ```
 
-### Place Node Structure
-
 ```typescript
 interface Place {
   id: string;
   signature: {
-    tof_fingerprint: number[];    // Binned scan at this location
-    camera_stills: string[];      // 3-5 reference images
-    semantic_labels: string[];    // "couch", "doorway", "window"
+    tof_fingerprint: number[];        // Binned scan at this location
+    camera_stills: string[];          // 3-5 reference images (paths)
+    semantic_labels: string[];        // "couch", "doorway", "window"
   };
-  tags: string[];                 // "open_area", "narrow", "cluttered"
+  tags: string[];                     // "open_area", "narrow", "cluttered"
   visit_count: number;
   last_visited: Date;
   typical_obstacles: string[];
 }
-```
 
-### Edge Structure
-
-```typescript
 interface Edge {
   from: string;
   to: string;
-  action: string;               // "forward_2m", "turn_left_90"
-  success_rate: number;         // 0-1, learned over time
+  action: string;                     // "forward_2m", "turn_left_90"
+  success_rate: number;               // 0-1, learned over time
   typical_duration_ms: number;
 }
 ```
 
-### Loop Closure ("Have I been here?")
-
-Probabilistic matching using:
+**Loop closure** uses probabilistic matching:
 1. ToF scan similarity (primary)
 2. Visual similarity (confirmation)
 3. Semantic consistency
 
-This approach:
-- Is robust to odometry drift
-- Provides stable symbols for LLM reasoning
-- Naturally accumulates experience
+Output: `loop_closure.candidates` with scores in WorldState.
+
+### Local Costmap (Tactical / Internal)
+
+A **small rolling grid** (~2m x 2m around robot) for immediate obstacle avoidance:
+
+- Updated continuously from ToF scans
+- Used by gap-following and recovery behaviors
+- **Never exposed to LLM** — abstracted into `geometry.best_gap`
+
+This isn't a contradiction: Place Graph answers "where should I go?", local costmap answers "how do I not clip that chair leg?"
 
 ---
 
@@ -253,6 +348,74 @@ The host accumulates experience that improves roaming over time:
 | Recovery frequency | Identify trouble spots |
 
 **Result:** Fewer repeated dead ends, smarter exploration, context-aware navigation — without LLM micromanagement.
+
+---
+
+## Data Retention & Replay
+
+### SQLite Schema
+
+```sql
+-- Places (nodes in place graph)
+CREATE TABLE places (
+    id TEXT PRIMARY KEY,
+    tof_fingerprint BLOB,
+    tags TEXT,                        -- JSON array
+    visit_count INTEGER DEFAULT 0,
+    last_visited TIMESTAMP,
+    typical_obstacles TEXT            -- JSON array
+);
+
+-- Edges between places
+CREATE TABLE edges (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    from_place TEXT REFERENCES places(id),
+    to_place TEXT REFERENCES places(id),
+    action TEXT,
+    success_count INTEGER DEFAULT 0,
+    failure_count INTEGER DEFAULT 0,
+    typical_duration_ms INTEGER
+);
+
+-- Sessions for replay/debugging
+CREATE TABLE sessions (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    started_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    ended_at TIMESTAMP,
+    notes TEXT
+);
+
+-- WorldState log (for replay)
+CREATE TABLE world_state_log (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    session_id INTEGER REFERENCES sessions(id),
+    timestamp_ms INTEGER,
+    state JSON                        -- Full WorldState snapshot
+);
+
+-- Action log (for replay)
+CREATE TABLE action_log (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    session_id INTEGER REFERENCES sessions(id),
+    timestamp_ms INTEGER,
+    action TEXT,
+    params JSON,
+    result JSON
+);
+```
+
+### Replay Format
+
+Log files contain interleaved WorldState + ActionResult entries:
+
+```jsonl
+{"type": "state", "ts": 1706300000000, "data": { /* WorldState */ }}
+{"type": "action", "ts": 1706300000100, "action": "explore", "params": {"duration_s": 60}}
+{"type": "state", "ts": 1706300000200, "data": { /* WorldState */ }}
+{"type": "result", "ts": 1706300005000, "action": "explore", "result": {"places_found": 3}}
+```
+
+This enables iterating on mapping/autonomy without re-driving the robot.
 
 ---
 
@@ -333,22 +496,25 @@ Once VL53L1X arrives:
 - [ ] VL53L1X ToF integration (hardware ordered)
 - [ ] Safety envelope (hard stop < D_stop)
 - [ ] Watchdog timeout (300-500ms)
+- [ ] WorldState schema v1 + logging
 
 **Success criteria:** No collisions, smooth motion under WiFi jitter, deterministic behavior.
 
 ---
 
-### Phase 2: Host as Tactical Brain
+### Phase 2: Host as Tactical Brain + MCP Contract
 
-**Objective:** Decouple LLM reasoning time from control timing.
+**Objective:** Decouple LLM reasoning time from control timing. Lock MCP tool contract early.
 
 - [ ] Time-bounded motion primitives (`SET_TWIST`)
-- [ ] Host-side gap following from scan bins
+- [ ] Local costmap for gap-following
+- [ ] Host autonomy state machine (IDLE → EXECUTING → AVOIDING → ...)
 - [ ] Automatic recovery (backup → turn → rescan)
 - [ ] Speed limiting near obstacles
 - [ ] Action timeouts
+- [ ] **MCP tools stubbed** (`explore`, `goto`, `observe`) — even if behavior is primitive
 
-**Success criteria:** LLM can pause/think without affecting motion. Host handles all "robot reflexes."
+**Success criteria:** LLM can call `explore()` and get structured results. Host handles all "robot reflexes."
 
 ---
 
@@ -358,7 +524,7 @@ Once VL53L1X arrives:
 
 - [ ] Place node creation from sensor signatures
 - [ ] Edge creation when moving between places
-- [ ] Loop closure detection
+- [ ] Loop closure detection with confidence scoring
 - [ ] SQLite storage for persistence
 - [ ] Semantic labeling (with vision, optional)
 
@@ -366,22 +532,7 @@ Once VL53L1X arrives:
 
 ---
 
-### Phase 4: Full MCP Interface
-
-**Objective:** Expose high-level tools to the LLM.
-
-- [ ] `explore()` — autonomous frontier exploration
-- [ ] `goto(place_id)` — place-to-place navigation
-- [ ] `observe()` — structured environment summary
-- [ ] `list_places()` / `describe_place()`
-- [ ] `set_constraints()`
-- [ ] Deprecate/hide low-level tools from LLM
-
-**Success criteria:** LLM can command "explore the room" and receive meaningful results without micromanaging.
-
----
-
-### Phase 5: Experience & Learning
+### Phase 4: Experience & Learning
 
 **Objective:** Roaming improves over time.
 
@@ -395,7 +546,7 @@ Once VL53L1X arrives:
 
 ---
 
-### Phase 6: Encoders (Reliability Improvement)
+### Phase 5: Encoders (Reliability Improvement)
 
 **Objective:** Improve navigation accuracy without changing MCP contract.
 
@@ -414,6 +565,7 @@ Once VL53L1X arrives:
 3. **LLMs reason over symbols, not signals** — Places, not centimeters
 4. **Memory lives on the host** — Experience accumulates locally
 5. **Hardware can change without breaking the MCP** — ToF replaces ultrasonic, LLM doesn't know
+6. **Lock the API early, improve autonomy behind it** — MCP contract is stable; implementation evolves
 
 ---
 
