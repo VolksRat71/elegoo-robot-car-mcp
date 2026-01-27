@@ -111,12 +111,13 @@ class RobotClient:
     MOTOR_FORWARD = 1
     MOTOR_BACKWARD = 2
 
-    # Car direction values (for CMD_CAR_DIRECTION)
-    CAR_FORWARD = 0
-    CAR_BACKWARD = 1
-    CAR_LEFT = 2
-    CAR_RIGHT = 3
-    CAR_STOP = 8
+    # Car direction values (for CMD_CAR_DIRECTION N=3)
+    # From firmware: Forward(1), Backward(2), Left(3), Right(4), Stop(0)
+    CAR_FORWARD = 1
+    CAR_BACKWARD = 2
+    CAR_LEFT = 3
+    CAR_RIGHT = 4
+    CAR_STOP = 0
 
     _instance: Optional["RobotClient"] = None
     _lock = threading.Lock()
@@ -128,6 +129,61 @@ class RobotClient:
         self.metrics = ConnectionMetrics()
         self.commands_since_connect = 0
         self._command_lock = threading.Lock()
+
+        # Motion keep-alive state
+        self._keepalive_thread: Optional[threading.Thread] = None
+        self._keepalive_running = False
+        self._current_motion: Optional[tuple] = None  # (direction, speed)
+        self._motion_lock = threading.Lock()
+
+    def start_motion_keepalive(self, interval_ms: int = 80):
+        """Start background thread that keeps motors running smoothly."""
+        if self._keepalive_thread is not None and self._keepalive_thread.is_alive():
+            return  # Already running
+
+        self._keepalive_running = True
+        self._keepalive_thread = threading.Thread(
+            target=self._keepalive_loop,
+            args=(interval_ms,),
+            daemon=True
+        )
+        self._keepalive_thread.start()
+        print(f"[ROBOT] Motion keep-alive started ({interval_ms}ms interval)")
+
+    def stop_motion_keepalive(self):
+        """Stop the keep-alive thread."""
+        self._keepalive_running = False
+        self._current_motion = None
+        if self._keepalive_thread is not None:
+            self._keepalive_thread.join(timeout=0.5)
+            self._keepalive_thread = None
+        print("[ROBOT] Motion keep-alive stopped")
+
+    def set_motion(self, direction: Optional[str], speed: int = 50):
+        """Set current motion state for keep-alive. None = stop."""
+        with self._motion_lock:
+            if direction is None:
+                self._current_motion = None
+            else:
+                self._current_motion = (direction, speed)
+
+    def _keepalive_loop(self, interval_ms: int):
+        """Background loop that continuously sends current motion command."""
+        interval_s = interval_ms / 1000.0
+        while self._keepalive_running:
+            with self._motion_lock:
+                motion = self._current_motion
+
+            if motion is not None:
+                direction, speed = motion
+                # Send motor command directly (don't use drive_no_wait to avoid recursion)
+                mapped_speed = int((speed / 100) * 250)
+                if direction == "forward":
+                    self.send_raw(self.CMD_MOTOR_CONTROL, 0, mapped_speed, self.MOTOR_FORWARD)
+                elif direction == "backward":
+                    self.send_raw(self.CMD_MOTOR_CONTROL, 0, mapped_speed, self.MOTOR_BACKWARD)
+
+            time.sleep(interval_s)
 
     @classmethod
     def get_instance(cls, host: str = "192.168.4.1", port: int = 100) -> "RobotClient":
@@ -176,11 +232,16 @@ class RobotClient:
             return self.connect()
         return True
 
-    def send_raw(self, n: int, d1: int = 0, d2: int = 0, d3: int = 0, d4: int = 0) -> tuple[bool, float, Optional[str]]:
+    def send_raw(self, n: int, d1: int = 0, d2: int = 0, d3: int = 0, d4: int = 0, t: int = 0) -> tuple[bool, float, Optional[str]]:
         """Send raw command and return (success, latency_ms, response).
 
         Uses fire-and-forget mode - ESP32 doesn't reliably ACK commands,
         but they still get through. We only wait briefly to clear buffer.
+
+        Args:
+            n: Command number
+            d1-d4: Data parameters
+            t: Timer parameter (for N=2 timed commands)
         """
         with self._command_lock:
             if not self._ensure_fresh_connection():
@@ -196,6 +257,8 @@ class RobotClient:
                     cmd["D3"] = d3
                 if d4 != 0:
                     cmd["D4"] = d4
+                if t != 0:
+                    cmd["T"] = t
 
                 msg = json.dumps(cmd) + "\n"
                 self.socket.sendall(msg.encode())
@@ -213,7 +276,10 @@ class RobotClient:
 
                 latency_ms = (time.perf_counter() - start) * 1000
                 self.metrics.record(True, latency_ms)
-                print(f"[ROBOT] Sent N={n} D1={d1} D2={d2} D3={d3} ({latency_ms:.1f}ms)")
+                if t != 0:
+                    print(f"[ROBOT] Sent N={n} D1={d1} D2={d2} T={t} ({latency_ms:.1f}ms)")
+                else:
+                    print(f"[ROBOT] Sent N={n} D1={d1} D2={d2} D3={d3} ({latency_ms:.1f}ms)")
                 return True, latency_ms, response
 
             except Exception as e:
@@ -264,9 +330,7 @@ class RobotClient:
     def drive_no_wait(self, direction: str, speed: int = 50) -> dict:
         """
         Start driving without waiting - returns immediately.
-
-        Uses CMD_MOTOR_CONTROL for direct motor access. Call frequently
-        (every 100-150ms) to maintain smooth continuous motion.
+        Uses CMD_MOTOR_CONTROL which is proven to work.
 
         Args:
             direction: "forward", "backward", "left", "right"
@@ -291,6 +355,40 @@ class RobotClient:
             return {"success": False, "error": f"Unknown direction: {direction}"}
 
         return {"success": success, "direction": direction, "speed": speed}
+
+    # Command number for timed car direction
+    CMD_CAR_TIMED = 2  # N=2: D1=direction, D2=speed, T=timer_ms
+
+    def drive_timed(self, direction: str, speed: int = 50, duration_ms: int = 1000) -> dict:
+        """
+        Start driving for a specific duration - motors sustain for duration_ms.
+        Uses CMD N=2 (time-limited car control) which keeps motors running
+        smoothly for the specified time without needing repeated commands.
+
+        Args:
+            direction: "forward", "backward", "left", "right"
+            speed: 0-100
+            duration_ms: How long motors should run (firmware handles timing)
+
+        Returns:
+            dict with success status
+        """
+        mapped_speed = int((speed / 100) * 250)
+
+        # Direction values for N=2: Forward=1, Backward=2, Left=3, Right=4
+        if direction == "forward":
+            dir_val = self.CAR_FORWARD
+        elif direction == "backward":
+            dir_val = self.CAR_BACKWARD
+        elif direction == "left":
+            dir_val = self.CAR_LEFT
+        elif direction == "right":
+            dir_val = self.CAR_RIGHT
+        else:
+            return {"success": False, "error": f"Unknown direction: {direction}"}
+
+        success, latency, _ = self.send_raw(self.CMD_CAR_TIMED, dir_val, mapped_speed, t=duration_ms)
+        return {"success": success, "direction": direction, "speed": speed, "duration_ms": duration_ms}
 
     def turn(self, degrees: int, speed: int = 50) -> dict:
         """Turn in place.

@@ -248,6 +248,7 @@ class DriverState:
     last_snapshot_time: float = 0.0
     snapshot_count: int = 0
     head_swing_count: int = 0
+    last_command_time: float = 0.0  # For timed command refresh
 
 
 # === Camera Capture ===
@@ -467,24 +468,17 @@ def execute_decision(decision: Decision, robot: RobotClient, config: Config) -> 
     """
     Execute a navigation decision using smooth continuous motion.
 
-    For forward/backward movement, uses drive_no_wait() which returns immediately.
-    This allows the control loop to run at full speed without blocking on motor
-    commands. The robot keeps moving until we send a different command.
-
-    For turns, still blocks briefly for accuracy (turns need precise timing).
+    Uses drive_no_wait() for forward/backward - sends CMD_MOTOR_CONTROL.
     """
     result = None
 
     if decision == Decision.FORWARD:
-        # Non-blocking: motors keep running until next command
         result = robot.drive_no_wait("forward", config.cruise_speed)
     elif decision == Decision.FORWARD_SLOW:
         result = robot.drive_no_wait("forward", config.slow_speed)
     elif decision == Decision.REVERSE:
-        # Non-blocking reverse
         result = robot.drive_no_wait("backward", config.reverse_speed)
     elif decision == Decision.TURN_LEFT:
-        # Turns still block for accuracy
         result = robot.turn(-config.turn_degrees_small, config.turn_speed)
     elif decision == Decision.TURN_RIGHT:
         result = robot.turn(config.turn_degrees_small, config.turn_speed)
@@ -497,7 +491,6 @@ def execute_decision(decision: Decision, robot: RobotClient, config: Config) -> 
     else:
         result = robot.stop()
 
-    # Centralized RobotClient returns dict with 'success' key
     return result.get("success", False) if isinstance(result, dict) else bool(result)
 
 
@@ -623,7 +616,7 @@ def run_driver(duration_s: int, config: Config, dry_run: bool = False):
             if decision.name.startswith("TURN"):
                 state.turn_count += 1
 
-            # Execute
+            # Execute every loop - motor commands need to be refreshed
             if dry_run:
                 print(f"[DRY-RUN] L:{state.smoothed_depth.left:5.1f}% "
                       f"C:{state.smoothed_depth.center:5.1f}% "
