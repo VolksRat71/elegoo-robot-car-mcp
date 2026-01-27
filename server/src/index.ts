@@ -224,16 +224,21 @@ async function main() {
   console.error(`Vision auto-start: ${autoStartVision}`);
   console.error(`Transport: ${useHttp ? `HTTP/SSE on port ${httpPort}` : "stdio"}`);
 
-  // Start vision service (Python sidecar)
+  // Start vision service (Python sidecar) - NON-BLOCKING
+  // Don't wait for models to load, let MCP server start immediately
   const visionManager = getVisionServiceManager();
   if (autoStartVision) {
-    console.error("Starting vision service...");
-    const visionStarted = await visionManager.start();
-    if (visionStarted) {
-      console.error("Vision service started and ready!");
-    } else {
-      console.error("Warning: Vision service failed to start. observe(mode='burst') will not include vision data.");
-    }
+    console.error("Starting vision service (non-blocking)...");
+    // Start async - don't await. Vision will become available when models load.
+    visionManager.start().then((started) => {
+      if (started) {
+        console.error("Vision service ready!");
+      } else {
+        console.error("Warning: Vision service failed to start. observe(mode='burst') will not include vision data.");
+      }
+    }).catch((err) => {
+      console.error(`Vision service error: ${err}`);
+    });
   }
 
   // Set up graceful shutdown
@@ -313,23 +318,60 @@ async function main() {
     return false;
   }
 
+  // Always start dashboard HTTP server (even in stdio mode for MCP)
+  const dashboardPort = parseInt(process.env.DASHBOARD_PORT || "3456");
+  const dashboardServer = createServer(async (req, res) => {
+    const url = new URL(req.url || "", `http://localhost:${dashboardPort}`);
+    const pathname = url.pathname;
+
+    // Handle Dashboard API requests (/api/*)
+    if (pathname.startsWith("/api/")) {
+      const handled = await handleDashboardApi(req, res, pathname);
+      if (handled) return;
+    }
+
+    // Health check
+    if (pathname === "/health") {
+      res.writeHead(200, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ status: "ok", robot: robot.isConnected() }));
+      return;
+    }
+
+    // Serve dashboard static files
+    let filePath = pathname === "/" ? "/index.html" : pathname;
+    if (await serveStaticFile(res, filePath)) return;
+
+    // For SPA routing, serve index.html for unknown paths
+    if (!pathname.includes(".") && (await serveStaticFile(res, "/index.html"))) {
+      return;
+    }
+
+    res.writeHead(404);
+    res.end("Not found");
+  });
+
+  dashboardServer.listen(dashboardPort, () => {
+    console.error(`Dashboard UI: http://localhost:${dashboardPort}/`);
+  });
+
   if (useHttp) {
-    // HTTP/SSE mode - allows watch/restart without breaking Claude connection
+    // HTTP/SSE mode for MCP - uses separate port from dashboard
+    const mcpSsePort = parseInt(process.env.MCP_SSE_PORT || "3457");
     const transports: Map<string, SSEServerTransport> = new Map();
 
-    const httpServer = createServer(async (req, res) => {
-      const url = new URL(req.url || "", `http://localhost:${httpPort}`);
+    const mcpHttpServer = createServer(async (req, res) => {
+      const url = new URL(req.url || "", `http://localhost:${mcpSsePort}`);
       const pathname = url.pathname;
 
       // Handle SSE connections (MCP protocol)
       if (pathname === "/sse") {
-        console.error("New SSE connection");
+        console.error("New MCP SSE connection");
         const transport = new SSEServerTransport("/message", res);
         transports.set(transport.sessionId, transport);
 
         res.on("close", () => {
           transports.delete(transport.sessionId);
-          console.error("SSE connection closed");
+          console.error("MCP SSE connection closed");
         });
 
         await server.connect(transport);
@@ -354,12 +396,6 @@ async function main() {
         return;
       }
 
-      // Handle Dashboard API requests (/api/*)
-      if (pathname.startsWith("/api/")) {
-        const handled = await handleDashboardApi(req, res, pathname);
-        if (handled) return;
-      }
-
       // Health check
       if (pathname === "/health") {
         res.writeHead(200, { "Content-Type": "application/json" });
@@ -367,23 +403,12 @@ async function main() {
         return;
       }
 
-      // Serve dashboard static files
-      // Try exact path first
-      let filePath = pathname === "/" ? "/index.html" : pathname;
-      if (await serveStaticFile(res, filePath)) return;
-
-      // For SPA routing, serve index.html for unknown paths
-      if (!pathname.includes(".") && (await serveStaticFile(res, "/index.html"))) {
-        return;
-      }
-
       res.writeHead(404);
       res.end("Not found");
     });
 
-    httpServer.listen(httpPort, () => {
-      console.error(`MCP server running on http://localhost:${httpPort}/sse`);
-      console.error(`Dashboard UI: http://localhost:${httpPort}/`);
+    mcpHttpServer.listen(mcpSsePort, () => {
+      console.error(`MCP SSE server: http://localhost:${mcpSsePort}/sse`);
     });
   } else {
     // Stdio mode - standard MCP transport

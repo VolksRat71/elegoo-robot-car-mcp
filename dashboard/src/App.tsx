@@ -14,6 +14,7 @@ function App() {
   const [error, setError] = useState<string | null>(null);
   const [lastUpdate, setLastUpdate] = useState<number | null>(null);
   const [isPaused, setIsPaused] = useState(false);
+  const [controlsOpen, setControlsOpen] = useState(false);
 
   const loadSnapshot = useCallback(async () => {
     if (isPaused) return;
@@ -90,10 +91,10 @@ function App() {
         <div className="mt-4 h-px bg-gradient-to-r from-[var(--accent-cyan)]/50 via-[var(--border-primary)] to-transparent" />
       </header>
 
-      {/* Main content */}
+      {/* Main content - 2x2 grid layout */}
       <div className="grid grid-cols-12 gap-4">
-        {/* Vision panels - left 8 columns */}
-        <div className="col-span-8 space-y-4">
+        {/* Top left: Vision panels (Camera + Depth) */}
+        <div className="col-span-8">
           <VisionPanel
             cameraImage={snapshot?.camera_image}
             depthImage={snapshot?.depth_image}
@@ -104,26 +105,30 @@ function App() {
           />
         </div>
 
-        {/* Right sidebar - 4 columns */}
-        <div className="col-span-4 space-y-4">
+        {/* Top right: System Status */}
+        <div className="col-span-4">
           <StatusPanel
             worldState={snapshot?.world_state}
             robotConnected={snapshot?.robot_connected ?? false}
             visionAvailable={snapshot?.vision_available ?? false}
             lastUpdate={lastUpdate ?? undefined}
           />
-          <DetectionsPanel
-            detections={snapshot?.detection?.detected_objects ?? []}
-            placeTags={snapshot?.world_state?.semantics?.current_place_tags ?? []}
-          />
         </div>
 
-        {/* Controls - bottom */}
-        <div className="col-span-12">
+        {/* Bottom left: Robot Controls */}
+        <div className="col-span-8">
           <ControlPanel
             onCommandStart={handleCommandStart}
             onCommandEnd={handleCommandEnd}
             disabled={!snapshot?.robot_connected}
+          />
+        </div>
+
+        {/* Bottom right: Detections */}
+        <div className="col-span-4">
+          <DetectionsPanel
+            detections={snapshot?.detection?.detected_objects ?? []}
+            placeTags={snapshot?.world_state?.semantics?.current_place_tags ?? []}
           />
         </div>
       </div>
