@@ -47,6 +47,15 @@ class ConnectionMetrics:
             return 0.0
         return sum(self.latencies_ms) / len(self.latencies_ms)
 
+    # Aliases for compatibility with autonomous_driver
+    def avg_latency(self) -> float:
+        return self.avg_latency_ms()
+
+    def max_latency(self) -> float:
+        if not self.latencies_ms:
+            return 0.0
+        return max(self.latencies_ms)
+
     def to_dict(self) -> dict:
         return {
             "commands_sent": self.commands_sent,
