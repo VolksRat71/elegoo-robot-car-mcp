@@ -19,10 +19,11 @@ import os
 import signal
 import sys
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+from datetime import datetime
 from enum import Enum
 from pathlib import Path
-from typing import Optional
+from typing import Optional, List
 
 import numpy as np
 
@@ -101,6 +102,19 @@ class Config:
     # Safety
     max_consecutive_stops: int = 3
     max_vision_failures: int = 5
+
+    # Head swing (servo sweep to find clear path)
+    head_swing_enabled: bool = True
+    head_swing_angles: List[int] = field(default_factory=lambda: [45, 90, 135])
+    head_swing_settle_ms: int = 200
+    head_swing_on_stuck: bool = True
+    head_swing_on_wall: bool = True
+
+    # Snapshots (periodic captures for Claude to see)
+    snapshots_enabled: bool = True
+    snapshots_interval_s: float = 5.0
+    snapshots_path: str = "drive_snapshots"
+    snapshots_max: int = 50
 
     def hot_reload(self) -> bool:
         """Reload config from JSON if file changed. Returns True if reloaded."""
@@ -181,6 +195,21 @@ class Config:
         config.max_consecutive_stops = safety.get("max_consecutive_stops", config.max_consecutive_stops)
         config.max_vision_failures = safety.get("max_vision_failures", config.max_vision_failures)
 
+        # Load head swing settings
+        head_swing = data.get("head_swing", {})
+        config.head_swing_enabled = head_swing.get("enabled", config.head_swing_enabled)
+        config.head_swing_angles = head_swing.get("angles", config.head_swing_angles)
+        config.head_swing_settle_ms = head_swing.get("settle_time_ms", config.head_swing_settle_ms)
+        config.head_swing_on_stuck = head_swing.get("trigger_on_stuck", config.head_swing_on_stuck)
+        config.head_swing_on_wall = head_swing.get("trigger_on_wall", config.head_swing_on_wall)
+
+        # Load snapshot settings
+        snapshots = data.get("snapshots", {})
+        config.snapshots_enabled = snapshots.get("enabled", config.snapshots_enabled)
+        config.snapshots_interval_s = snapshots.get("interval_s", config.snapshots_interval_s)
+        config.snapshots_path = snapshots.get("save_path", config.snapshots_path)
+        config.snapshots_max = snapshots.get("max_snapshots", config.snapshots_max)
+
         # Store mode for hot-reload
         config._mode = mode
         config._last_reload = CONFIG_PATH.stat().st_mtime if CONFIG_PATH.exists() else 0
@@ -216,6 +245,9 @@ class DriverState:
     turn_count: int = 0
     forward_count: int = 0
     start_time: float = 0.0
+    last_snapshot_time: float = 0.0
+    snapshot_count: int = 0
+    head_swing_count: int = 0
 
 
 # === Camera Capture ===
@@ -236,6 +268,83 @@ def capture_frame(vision_service_url: str) -> Optional[np.ndarray]:
     except Exception as e:
         print(f"[CAMERA] Error fetching from vision service: {e}")
         return None
+
+
+# === Head Swing (Servo Sweep) ===
+
+def head_swing_scan(robot: "RobotClient", config: Config, depth_estimator, vision_service_url: str) -> Optional[int]:
+    """
+    Sweep servo to find clearest path.
+    Returns: best angle (45=left, 90=center, 135=right) or None if failed.
+    """
+    if not config.head_swing_enabled:
+        return None
+
+    print("[HEAD] Scanning for clear path...")
+    results = []
+
+    for angle in config.head_swing_angles:
+        # Move servo
+        robot.look(angle)
+        time.sleep(config.head_swing_settle_ms / 1000.0)
+
+        # Capture and analyze depth
+        frame = capture_frame(vision_service_url)
+        if frame is None:
+            continue
+
+        pil_frame = Image.fromarray(frame)
+        depth_result = depth_estimator.estimate(pil_frame)
+        center_depth = depth_result["depth_zones"]["center"] * 100
+
+        results.append((angle, center_depth))
+        print(f"[HEAD] Angle {angle}°: {center_depth:.1f}%")
+
+    # Return servo to center
+    robot.look(90)
+
+    if not results:
+        return None
+
+    # Find angle with lowest depth (clearest path)
+    best_angle, best_depth = min(results, key=lambda x: x[1])
+    print(f"[HEAD] Best path: {best_angle}° ({best_depth:.1f}%)")
+    return best_angle
+
+
+# === Snapshot Capture ===
+
+def save_snapshot(frame: np.ndarray, state: DriverState, config: Config, depth: DepthZones, decision: str):
+    """Save a snapshot image with metadata for Claude to review."""
+    if not config.snapshots_enabled:
+        return
+
+    now = time.time()
+    if now - state.last_snapshot_time < config.snapshots_interval_s:
+        return
+
+    # Create snapshot directory
+    snapshot_dir = Path(CONFIG_PATH).parent / config.snapshots_path
+    snapshot_dir.mkdir(exist_ok=True)
+
+    # Clean up old snapshots if over limit
+    existing = sorted(snapshot_dir.glob("*.jpg"))
+    while len(existing) >= config.snapshots_max:
+        existing[0].unlink()
+        existing = existing[1:]
+
+    # Save snapshot with timestamp and metadata in filename
+    timestamp = datetime.now().strftime("%H%M%S")
+    elapsed = int(now - state.start_time)
+    filename = f"{timestamp}_e{elapsed}s_L{depth.left:.0f}_C{depth.center:.0f}_R{depth.right:.0f}_{decision}.jpg"
+    filepath = snapshot_dir / filename
+
+    pil_image = Image.fromarray(frame)
+    pil_image.save(filepath, quality=85)
+
+    state.last_snapshot_time = now
+    state.snapshot_count += 1
+    print(f"[SNAP] Saved {filename}")
 
 
 # === Decision Engine ===
@@ -399,15 +508,47 @@ def run_driver(duration_s: int, config: Config, dry_run: bool = False):
             # Decide
             decision = make_decision(state.smoothed_depth, state, config)
 
-            # Handle consecutive stops
-            if decision == Decision.STOP:
-                state.consecutive_stops += 1
-                if state.consecutive_stops > config.max_consecutive_stops:
-                    print("[DRIVER] Multiple stops, reversing...")
-                    decision = Decision.REVERSE
+            # Check if we should do head swing to find better path
+            do_head_swing = False
+            if not dry_run and robot:
+                # Head swing on wall detection
+                if config.head_swing_on_wall and is_wall_pattern(state.smoothed_depth, config):
+                    do_head_swing = True
+                    print("[DRIVER] Wall detected, scanning for path...")
+
+                # Head swing on stuck (consecutive stops)
+                if decision == Decision.STOP:
+                    state.consecutive_stops += 1
+                    if state.consecutive_stops >= config.max_consecutive_stops and config.head_swing_on_stuck:
+                        do_head_swing = True
+                        print("[DRIVER] Stuck, scanning for path...")
+                else:
                     state.consecutive_stops = 0
+
+                # Perform head swing if triggered
+                if do_head_swing:
+                    best_angle = head_swing_scan(robot, config, depth_estimator, config.vision_service_url)
+                    state.head_swing_count += 1
+                    state.consecutive_stops = 0
+
+                    if best_angle is not None:
+                        # Turn toward clearest direction
+                        if best_angle < 90:  # Left is clearer
+                            decision = Decision.TURN_LEFT_LARGE
+                        elif best_angle > 90:  # Right is clearer
+                            decision = Decision.TURN_RIGHT_LARGE
+                        else:  # Center is clearest, reverse a bit then go
+                            decision = Decision.REVERSE
             else:
-                state.consecutive_stops = 0
+                # Handle consecutive stops in dry-run mode
+                if decision == Decision.STOP:
+                    state.consecutive_stops += 1
+                    if state.consecutive_stops > config.max_consecutive_stops:
+                        print("[DRIVER] Multiple stops, reversing...")
+                        decision = Decision.REVERSE
+                        state.consecutive_stops = 0
+                else:
+                    state.consecutive_stops = 0
 
             # Track stats
             if decision in (Decision.FORWARD, Decision.FORWARD_SLOW):
@@ -437,6 +578,9 @@ def run_driver(duration_s: int, config: Config, dry_run: bool = False):
                 # Note: Reconnection is handled automatically by RobotClient's
                 # reconnect-every-3 pattern - no manual reconnect needed here
 
+            # Save periodic snapshot for Claude to see where we are
+            save_snapshot(frame, state, config, state.smoothed_depth, decision.value)
+
             state.last_decision = decision
 
             # Maintain loop timing
@@ -462,6 +606,8 @@ def run_driver(duration_s: int, config: Config, dry_run: bool = False):
         print(f"  Duration:       {elapsed:.1f}s")
         print(f"  Forward moves:  {state.forward_count}")
         print(f"  Turns:          {state.turn_count}")
+        print(f"  Head swings:    {state.head_swing_count}")
+        print(f"  Snapshots:      {state.snapshot_count}")
         print(f"  Vision fails:   {state.vision_failures}")
 
         if not dry_run and robot and robot.metrics.commands_sent > 0:

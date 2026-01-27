@@ -4,6 +4,21 @@
     "frame_timeout_s": 3.0
   },
 
+  "head_swing": {
+    "enabled": true,
+    "angles": [45, 90, 135],
+    "settle_time_ms": 200,
+    "trigger_on_stuck": true,
+    "trigger_on_wall": true
+  },
+
+  "snapshots": {
+    "enabled": true,
+    "interval_s": 5.0,
+    "save_path": "drive_snapshots",
+    "max_snapshots": 50
+  },
+
   "driving_modes": {
     "normal": {
       "cruise_speed": 35,
@@ -26,14 +41,14 @@
       "turn_speed": 38,
       "reverse_speed": 28,
       "loop_interval_ms": 300,
-      "drive_duration_ms": 750,
+      "drive_duration_ms": 850,
       "turn_degrees_small": 25,
-      "turn_degrees_large": 55,
-      "reverse_duration_ms": 400,
+      "turn_degrees_large": 60,
+      "reverse_duration_ms": 450,
       "clear_threshold": 38.0,
-      "obstacle_threshold": 52.0,
-      "danger_threshold": 70.0,
-      "wall_variance": 12.0
+      "obstacle_threshold": 50.0,
+      "danger_threshold": 68.0,
+      "wall_variance": 10.0
     }
   },
 
