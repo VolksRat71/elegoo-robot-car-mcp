@@ -5,7 +5,6 @@
  * - observe() - Get current WorldState
  * - explore() - Autonomous exploration with obstacle avoidance
  * - stop() - Immediate halt
- * - list_places() - List known places (stub for now)
  */
 
 import { z } from "zod";
@@ -196,28 +195,6 @@ export async function stop(): Promise<string> {
 }
 
 // ============================================================================
-// list_places() - List known places (stub)
-// ============================================================================
-
-export const listPlacesSchema = z.object({});
-
-export async function listPlaces(): Promise<string> {
-  // Pre-laser: Return empty list
-  // Post-laser: Query place graph from SQLite
-  return `[Place Graph - Pre-laser stub]
-No places discovered yet. Place graph requires VL53L1X ToF sensor for reliable place signatures.
-
-Current capabilities:
-- Waypoints (dead reckoning): Use list_waypoints tool
-- Occupancy grid: Basic obstacle mapping
-
-Future (post-ToF):
-- Place nodes with ToF fingerprints
-- Place edges with success rates
-- Loop closure detection`;
-}
-
-// ============================================================================
 // Export tool definitions
 // ============================================================================
 
@@ -236,18 +213,17 @@ export const tacticalTools = {
     schema: exploreSchema,
     handler: explore,
   },
-  tactical_stop: {
-    name: "tactical_stop",
+  stop: {
+    name: "stop",
     description:
       "Immediately stop all robot movement and cancel any ongoing exploration. Sets autonomy state to IDLE.",
     schema: stopSchema,
     handler: stop,
   },
-  list_places: {
-    name: "list_places",
-    description:
-      "List all known places in the place graph. Currently returns empty (requires VL53L1X ToF sensor).",
-    schema: listPlacesSchema,
-    handler: listPlaces,
-  },
 };
+
+// =============================================================================
+// GATED TOOLS - Disabled until VL53L1X ToF sensor arrives
+// =============================================================================
+// - list_places: Place graph query (requires ToF fingerprints for place signatures)
+// =============================================================================

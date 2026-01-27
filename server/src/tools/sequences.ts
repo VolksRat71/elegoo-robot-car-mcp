@@ -183,10 +183,10 @@ export async function executeSequence(
         if (imgContent && imgContent.type === "image") {
           capturedImage = { data: imgContent.data, mimeType: imgContent.mimeType };
         }
-        results.push(`[${stepNum}] ✓ Captured image`);
+        results.push(`[${stepNum}] Captured image`);
       } catch (error) {
         results.push(
-          `[${stepNum}] ✗ Capture failed: ${error instanceof Error ? error.message : "Unknown error"}`
+          `[${stepNum}] Capture failed: ${error instanceof Error ? error.message : "Unknown error"}`
         );
         if (params.stop_on_error) {
           results.push("");
@@ -200,9 +200,9 @@ export async function executeSequence(
     const result = await executeAction(action);
 
     if (result.success) {
-      results.push(`[${stepNum}] ✓ ${result.message}`);
+      results.push(`[${stepNum}] ${result.message}`);
     } else {
-      results.push(`[${stepNum}] ✗ ${result.message}`);
+      results.push(`[${stepNum}] FAILED: ${result.message}`);
 
       // Check if this was a connection error
       if (result.message.includes("Connection lost") || result.message.includes("reconnecting")) {
@@ -264,68 +264,6 @@ export async function executeSequence(
   return { content };
 }
 
-// Quick navigation patterns
-export const quickPatternSchema = z.object({
-  pattern: z
-    .enum(["look_around", "backup_and_turn", "square", "explore_forward"])
-    .describe("Predefined movement pattern to execute"),
-  speed: z.number().min(0).max(100).default(40).describe("Speed for movements"),
-});
-
-export async function executePattern(
-  params: z.infer<typeof quickPatternSchema>
-): Promise<SequenceResult> {
-  const patterns: Record<string, z.infer<typeof executeSequenceSchema>["actions"]> = {
-    look_around: [
-      { action: "look", angle: 0 },
-      { action: "wait", duration_ms: 300 },
-      { action: "capture" },
-      { action: "look", angle: 90 },
-      { action: "wait", duration_ms: 300 },
-      { action: "capture" },
-      { action: "look", angle: 180 },
-      { action: "wait", duration_ms: 300 },
-      { action: "capture" },
-      { action: "look", angle: 90 },
-    ],
-    backup_and_turn: [
-      { action: "drive", direction: "backward", speed: params.speed, duration_ms: 800 },
-      { action: "turn", degrees: 90, speed: params.speed },
-      { action: "capture" },
-    ],
-    square: [
-      { action: "drive", direction: "forward", speed: params.speed, duration_ms: 1000 },
-      { action: "turn", degrees: 90, speed: params.speed },
-      { action: "drive", direction: "forward", speed: params.speed, duration_ms: 1000 },
-      { action: "turn", degrees: 90, speed: params.speed },
-      { action: "drive", direction: "forward", speed: params.speed, duration_ms: 1000 },
-      { action: "turn", degrees: 90, speed: params.speed },
-      { action: "drive", direction: "forward", speed: params.speed, duration_ms: 1000 },
-      { action: "turn", degrees: 90, speed: params.speed },
-      { action: "capture" },
-    ],
-    explore_forward: [
-      { action: "look", angle: 90 },
-      { action: "capture" },
-      { action: "drive", direction: "forward", speed: params.speed, duration_ms: 1500 },
-      { action: "capture" },
-    ],
-  };
-
-  const actions = patterns[params.pattern];
-  if (!actions) {
-    return {
-      content: [{ type: "text", text: `Unknown pattern: ${params.pattern}` }],
-    };
-  }
-
-  return executeSequence({
-    actions,
-    capture_at_end: false, // Patterns handle their own captures
-    stop_on_error: true,
-  });
-}
-
 export const sequenceTools = {
   execute_sequence: {
     name: "execute_sequence",
@@ -343,17 +281,5 @@ Example: Turn right, move forward, and take a photo:
 [{"action":"turn","degrees":90},{"action":"drive","direction":"forward","speed":40,"duration_ms":1000},{"action":"capture"}]`,
     schema: executeSequenceSchema,
     handler: executeSequence,
-  },
-  execute_pattern: {
-    name: "execute_pattern",
-    description: `Execute a predefined movement pattern.
-
-Available patterns:
-- look_around: Pan camera left, center, right with captures
-- backup_and_turn: Back up and turn 90° right
-- square: Drive in a square pattern
-- explore_forward: Look ahead, capture, move forward, capture`,
-    schema: quickPatternSchema,
-    handler: executePattern,
   },
 };

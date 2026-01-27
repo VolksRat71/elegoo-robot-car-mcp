@@ -2,12 +2,6 @@ import { z } from "zod";
 import { getRobotClient } from "../robot-client.js";
 import { getMapStore } from "../map-store.js";
 
-export const setModeSchema = z.object({
-  mode: z
-    .enum(["manual", "explore", "line_follow", "obstacle_avoid"])
-    .describe("Operating mode for the robot"),
-});
-
 export async function getStatus(): Promise<string> {
   const robot = getRobotClient();
   const mapStore = getMapStore();
@@ -62,29 +56,6 @@ export async function getStatus(): Promise<string> {
   result += `\nPosition (estimated): (${position.x.toFixed(1)}, ${position.y.toFixed(1)}) heading ${position.heading.toFixed(1)}°`;
 
   return result;
-}
-
-export async function setMode(params: z.infer<typeof setModeSchema>): Promise<string> {
-  const robot = getRobotClient();
-
-  try {
-    const response = await robot.setMode(params.mode);
-
-    if (!response.success) {
-      return `Failed to set mode: ${response.error || "Unknown error"}`;
-    }
-
-    const modeDescriptions: Record<string, string> = {
-      manual: "Manual control - robot responds only to direct commands",
-      explore: "Exploration mode - robot autonomously explores and maps environment",
-      line_follow: "Line following mode - robot follows detected line patterns",
-      obstacle_avoid: "Obstacle avoidance mode - robot moves forward and avoids obstacles",
-    };
-
-    return `Mode set to: ${params.mode}\n${modeDescriptions[params.mode]}`;
-  } catch (error) {
-    return `Error setting mode: ${error instanceof Error ? error.message : "Unknown error"}`;
-  }
 }
 
 export async function resetPosition(): Promise<string> {
@@ -145,13 +116,6 @@ export const systemTools = {
       "Quick check of current estimated position and heading. Lightweight alternative to get_status.",
     schema: z.object({}),
     handler: getPosition,
-  },
-  set_mode: {
-    name: "set_mode",
-    description:
-      "Set the robot's operating mode. 'manual' for direct control, 'explore' for autonomous mapping, 'line_follow' to track lines, 'obstacle_avoid' to move while avoiding obstacles.",
-    schema: setModeSchema,
-    handler: setMode,
   },
   reset_position: {
     name: "reset_position",
