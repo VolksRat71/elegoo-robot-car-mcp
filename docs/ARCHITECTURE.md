@@ -1,476 +1,432 @@
-# Architecture: Autonomous Navigation System
+# Architecture: LLM-First Robot MCP
 
-## Overview
+## Primary Goal
 
-This document describes the target architecture for transforming the Elegoo Robot Car from a remote-controlled toy into an autonomous navigation platform that Claude can command at a strategic level.
+> **Build a Robot MCP (Model Context Protocol) that allows LLMs to safely, reliably, and progressively roam the physical world.**
 
-## Design Philosophy: Micromouse-Style Navigation
-
-Instead of Claude micromanaging every movement ("forward 2s, turn 45°, check surroundings, repeat"), the system should work like a micromouse competition robot:
-
-- **Claude decides WHERE to go** (strategic)
-- **Server figures out HOW to get there** (tactical)
-- **Arduino executes motor commands and reads sensors** (reactive)
+The key principle:
+- The **LLM is strategic**, not tactical
+- The **host is the autonomy & memory layer**
+- The **microcontroller enforces safety and timing**, regardless of LLM behavior
 
 ---
 
-## Current vs Target Architecture
-
-### Current (Claude micromanages)
-```
-┌─────────┐    "forward 2s"     ┌─────────┐    JSON cmd    ┌─────────┐
-│ Claude  │ ──────────────────► │   MCP   │ ─────────────► │ Arduino │
-│         │ ◄────────────────── │ Server  │ ◄───────────── │         │
-└─────────┘    "done, 15cm"     └─────────┘    response    └─────────┘
-              (repeat 100x)
-```
-
-### Target (Claude is strategic, server is tactical)
-```
-┌─────────┐   "explore room"    ┌─────────────────────────┐    low-level    ┌─────────┐
-│ Claude  │ ──────────────────► │      MCP Server         │ ◄────────────► │ Arduino │
-│         │ ◄────────────────── │  • Occupancy grid       │   fast loop    │  • Motors│
-└─────────┘   "found door at    │  • A* pathfinding       │   ~50ms        │  • Sensors│
-              NE corner"        │  • Wall following       │                │  • Servo │
-                                │  • Localization         │                └─────────┘
-                                │  • SQLite map store     │
-                                └─────────────────────────┘
-```
-
----
-
-## Three-Layer Responsibility Split
-
-| Layer | Responsibility | Runs On | Update Frequency |
-|-------|---------------|---------|------------------|
-| **Strategic** | Goals, decisions, understanding | Claude | Per task |
-| **Tactical** | Pathfinding, mapping, navigation | MCP Server | ~100ms |
-| **Reactive** | Motor control, sensor polling, reflexes | Arduino | ~10-50ms |
-
-### Strategic Layer (Claude)
-
-Claude handles high-level commands:
-- "Explore the room and tell me what you find"
-- "Go to the waypoint called 'kitchen'"
-- "Find something red"
-- "Map this floor"
-- "What's behind that door?"
-
-Claude does NOT handle:
-- Individual motor commands
-- Obstacle avoidance decisions
-- Path planning details
-- Sensor polling
-
-### Tactical Layer (MCP Server)
-
-The server is the "brain" of the robot:
+## Three-Layer Architecture
 
 ```
-server/
-├── src/
-│   ├── navigation/
-│   │   ├── grid.ts           # Occupancy grid management
-│   │   ├── pathfinder.ts     # A* / Dijkstra
-│   │   ├── localizer.ts      # Position estimation
-│   │   └── behaviors.ts      # Wall-follow, explore, spiral search
-│   ├── data/
-│   │   └── map-store.ts      # SQLite for persistent maps
-│   └── tools/
-│       ├── explore.ts        # "explore room" → autonomous mapping
-│       ├── navigate.ts       # "go to X" → path planning + execution
-│       └── sensors.ts        # Raw sensor access
-└── data/
-    └── robot.db              # SQLite: maps, waypoints, sessions
-```
-
-### Reactive Layer (Arduino)
-
-The Arduino is "dumb but fast":
-
-**Inputs:**
-- Motor commands (speed, direction)
-- Servo commands (angle)
-- Behavior triggers (scan, follow wall)
-
-**Outputs:**
-- Distance readings (continuous)
-- Line sensor values (continuous)
-- Odometry ticks (if encoders added)
-- Behavior completion events
-
----
-
-## Arduino Firmware: Slim Down
-
-### Components to REMOVE
-
-| Component | Size | Reason |
-|-----------|------|--------|
-| IRremote.* | ~50KB | No remote control needed |
-| MPU6050.* | ~85KB | Complex, unreliable, server handles heading |
-| Voice control | ~200 lines | Unnecessary |
-| Mode button | ~100 lines | Server controls modes |
-| Follow mode | ~150 lines | Server handles this behavior |
-| Rocker mode | ~100 lines | No joystick control |
-| LED animations | ~200 lines | Keep only status indicator |
-| LED expressions | ~200 lines | Unnecessary |
-| ArduinoJson | ~176KB | Use simple parser |
-
-**Total reduction: ~300KB+ of flash, ~1000 lines of code**
-
-### Components to KEEP
-
-| Component | Purpose |
-|-----------|---------|
-| Motor driver (TB6612) | Movement control |
-| Ultrasonic (HC-SR04) | Distance sensing |
-| Servo (pan only) | Rotate sensor head |
-| Line sensors (3x IR) | Wall/edge detection |
-| Serial protocol | Command interface |
-| RGB LED (minimal) | Status indicator only |
-
-### Status LED (Minimal Implementation)
-
-Keep FastLED but strip down to simple status colors:
-
-```cpp
-// Status colors in config.h
-#define LED_COLOR_BOOT      CRGB::Blue     // Initializing
-#define LED_COLOR_READY     CRGB::Green    // Connected, idle
-#define LED_COLOR_ACTIVE    CRGB::Cyan     // Executing command
-#define LED_COLOR_ERROR     CRGB::Red      // Fault/disconnected
-#define LED_COLOR_LOW_BATT  CRGB::Orange   // Battery warning
-
-// Simple helper function (~10 lines)
-void setStatusLED(CRGB color) {
-    leds[0] = color;
-    FastLED.show();
-}
-```
-
-### Components to ADD
-
-New built-in reactive behaviors that run on Arduino:
-
-```cpp
-// Drive until obstacle detected within threshold
-void CMD_DriveUntilObstacle(uint8_t speed, uint8_t threshold_cm) {
-    while (getDistance() > threshold_cm) {
-        driveForward(speed);
-        delay(50);  // Check every 50ms
-    }
-    stop();
-    Serial.println("{\"done\":true,\"distance\":" + String(getDistance()) + "}");
-}
-
-// Follow wall on left/right side
-void CMD_FollowWall(uint8_t side, uint8_t speed, uint16_t duration_ms) {
-    unsigned long start = millis();
-    while (millis() - start < duration_ms) {
-        int dist = scanSide(side);
-        adjustMotors(dist, TARGET_WALL_DIST, speed);
-        delay(20);
-    }
-    stop();
-    Serial.println("{\"done\":true}");
-}
-
-// Scan arc and return distance array
-void CMD_ScanArc(uint8_t start_angle, uint8_t end_angle, uint8_t step) {
-    Serial.print("{\"distances\":[");
-    for (int a = start_angle; a <= end_angle; a += step) {
-        servo.write(a);
-        delay(100);  // Settle time
-        Serial.print(getDistance());
-        if (a + step <= end_angle) Serial.print(",");
-    }
-    Serial.println("]}");
-}
-
-// Continuous sensor streaming mode
-void CMD_StartSensorStream(uint8_t interval_ms) {
-    streaming = true;
-    streamInterval = interval_ms;
-}
-// In main loop: if (streaming) sendSensorPacket();
-```
-
-### New Command Protocol
-
-```
-Essential Commands (keep):
-N=1:  Motor control       {N:1, D1:motor, D2:speed, D3:dir}
-N=4:  Differential drive  {N:4, D1:left_speed, D2:right_speed}
-N=5:  Servo angle         {N:5, D1:1, D2:angle}
-N=21: Ultrasonic read     {N:21, D1:2}  ← D1=2 for actual cm
-N=22: Line sensors        {N:22, D1:1}
-N=100: Stop/Standby       {N:100}
-
-New Commands (add):
-N=30: Drive until obstacle  {N:30, D1:speed, D2:threshold_cm}
-N=31: Follow wall           {N:31, D1:side, D2:speed, D3:duration_ms}
-N=32: Scan arc              {N:32, D1:start_angle, D2:end_angle, D3:step}
-N=33: Start sensor stream   {N:33, D1:interval_ms}
-N=34: Stop sensor stream    {N:34}
+┌─────────────────────────────────────────────────────────────────────────┐
+│                        STRATEGIC LAYER (LLM)                            │
+│  Intent, goals, policies, reasoning                                     │
+│  "explore the room" / "find something red" / "patrol between A and B"   │
+└─────────────────────────────────────────────────────────────────────────┘
+                                    │
+                          MCP Protocol (tools)
+                                    │
+                                    ▼
+┌─────────────────────────────────────────────────────────────────────────┐
+│                        TACTICAL LAYER (Host)                            │
+│  MCP Server + Robot Autonomy Runtime                                    │
+│  Sensor fusion, mapping, path selection, memory, behavior execution     │
+└─────────────────────────────────────────────────────────────────────────┘
+                                    │
+                         Serial/TCP (fast loop)
+                                    │
+                                    ▼
+┌─────────────────────────────────────────────────────────────────────────┐
+│                        REACTIVE LAYER (Arduino)                         │
+│  Motor PWM, sensor reads, servo control, safety envelope, watchdog      │
+└─────────────────────────────────────────────────────────────────────────┘
 ```
 
 ---
 
-## MCP Server: Navigation Module
+## Layer Contracts
 
-### Occupancy Grid
+### Reactive Layer — Arduino Uno
+
+**Never exposed directly to the LLM.**
+
+| Responsibility | Description |
+|----------------|-------------|
+| Motor control | PWM timing, direction, differential drive |
+| Sensor reads | ToF/ultrasonic distance, line sensors |
+| Servo control | Pan angle for sensor head |
+| Safety envelope | Hard stop if obstacle < D_stop, slow if < D_slow |
+| Watchdog | Stop motors if host silent for 300-500ms |
+
+**Guarantee:**
+> The robot will not crash or behave dangerously, even if higher layers stall or misbehave.
+
+**Output to Host:**
+- `distance_mm` (10-20 Hz continuous or on-demand)
+- `scan_bins_mm` (1-2 Hz, binned servo sweep)
+- Events: `obstacle_abort`, `watchdog_stop`, `low_battery`
+
+---
+
+### Tactical Layer — Host (MCP Server)
+
+**The MCP implementation lives here. Handles everything between intent and motors.**
+
+| Responsibility | Description |
+|----------------|-------------|
+| Sensor fusion | Combine ToF, encoders (future), vision metadata |
+| Mapping | Place graph or occupancy grid |
+| Localization | Position estimation with uncertainty |
+| Path selection | A*, frontier exploration, recovery behaviors |
+| Memory | Experience accumulation, place visit history |
+| Behavior execution | Translate high-level intent into motion primitives |
+
+**Guarantee:**
+> The LLM never has to reason about PWM, jitter, sensor noise, or timing.
+
+**Commands to Arduino:**
+- `SET_TWIST(v_mm_s, w_deg_s, duration_ms)` — time-bounded motion
+- `STOP()` — immediate halt
+- `SCAN(start_angle, end_angle, step)` — servo sweep
+
+**Outputs to LLM:**
+- Structured summaries (not raw streams)
+- Place descriptions and semantic labels
+- Confidence levels for localization and safety
+
+---
+
+### Strategic Layer — LLM
+
+**Intent, goals, policies, reasoning. Never touches motors.**
+
+| Responsibility | Description |
+|----------------|-------------|
+| Goal selection | "explore", "patrol", "return home", "find X" |
+| Constraints | "avoid people", "be quiet", "stay in this room" |
+| Information requests | "I need more detail about that area" |
+| Long-horizon planning | Multi-step task decomposition |
+| Interpretation | Understanding summaries and making decisions |
+
+**Guarantee:**
+> The LLM reasons in symbols, places, and intent — not motors, timing, or signals.
+
+**What the LLM should NOT do:**
+- Issue individual motor commands
+- Parse raw sensor data
+- Handle obstacle avoidance logic
+- Manage connection stability
+- Worry about timing or jitter
+
+---
+
+## MCP Interface Design
+
+### Actions (LLM → Host)
+
+**Movement:**
+```
+explore(duration_s | frontier_id)  → Autonomous exploration
+goto(place_id)                     → Navigate to known place
+stop()                             → Halt current action
+```
+
+**Sensing:**
+```
+observe(mode="quick" | "burst")    → Get current surroundings
+scan()                             → Request fresh sensor sweep
+```
+
+**Memory:**
+```
+list_places()                      → Get known locations
+describe_place(place_id)           → Details about a place
+set_home(place_id)                 → Mark home location
+return_home()                      → Navigate back to home
+```
+
+**Constraints:**
+```
+set_constraints({
+  max_speed,
+  min_person_distance,
+  no_go_places,
+  quiet_mode
+})
+```
+
+### Observations (Host → LLM)
+
+Structured summaries, not raw streams:
 
 ```typescript
-// Grid cell states
-enum CellState {
-    UNKNOWN = 0,
-    WALL = 1,
-    OPEN = 2,
-    VISITED = 3,
-}
-
-// Grid management
-class OccupancyGrid {
-    private cells: Map<string, CellState>;
-    private resolution: number = 10;  // cm per cell
-
-    update(x: number, y: number, state: CellState): void;
-    get(x: number, y: number): CellState;
-    getNeighbors(x: number, y: number): CellState[];
-    toAscii(): string;
-    toJson(): object;
-}
-```
-
-### Pathfinding
-
-```typescript
-// A* pathfinder
-class Pathfinder {
-    findPath(
-        grid: OccupancyGrid,
-        start: Point,
-        goal: Point
-    ): Path | null;
-
-    // Returns next step, handles replanning on obstacle
-    getNextWaypoint(
-        currentPos: Point,
-        path: Path,
-        obstacles: Point[]
-    ): Point;
+{
+  robot_state: {
+    mode: "exploring" | "navigating" | "idle" | "stuck",
+    last_action: string,
+    stuck_counter: number
+  },
+  geometry: {
+    front_min_mm: number,
+    scan_bins_mm: number[],
+    best_gap: { bearing: number, width_mm: number }
+  },
+  semantics: {
+    detected_objects: { label: string, bearing: number, confidence: number }[],
+    current_place_tags: string[]  // "hallway", "open_area", "cluttered"
+  },
+  map_summary: {
+    current_place: string,
+    nearby_places: string[],
+    unexplored_frontiers: number
+  },
+  confidence: {
+    localization: number,  // 0-1
+    safety: number         // 0-1
+  }
 }
 ```
 
-### Navigation Behaviors
-
-```typescript
-// Built-in behaviors the server can execute
-class NavigationBehaviors {
-    // Explore unknown area using frontier-based exploration
-    async explore(bounds?: Bounds): Promise<ExploreResult>;
-
-    // Navigate to target using A* path
-    async navigateTo(target: Point | string): Promise<NavigateResult>;
-
-    // Follow wall for mapping
-    async followWall(side: 'left' | 'right', duration: number): Promise<void>;
-
-    // Spiral outward search pattern
-    async spiralSearch(callback: (pos: Point) => boolean): Promise<Point | null>;
-}
-```
+LLM can request richer data explicitly with `observe(mode="burst")`.
 
 ---
 
-## Data Storage: SQLite Schema
+## Mapping Approach: Place Graph
 
-```sql
--- Occupancy grid cells
-CREATE TABLE grid_cells (
-    x INTEGER NOT NULL,
-    y INTEGER NOT NULL,
-    state INTEGER NOT NULL DEFAULT 0,
-    confidence REAL DEFAULT 0.5,
-    last_seen TIMESTAMP,
-    PRIMARY KEY (x, y)
-);
+Instead of pure geometric SLAM (which drifts and is hard for LLMs to reason about), use a **topological Place Graph**:
 
--- Named waypoints
-CREATE TABLE waypoints (
-    name TEXT PRIMARY KEY,
-    x REAL NOT NULL,
-    y REAL NOT NULL,
-    heading REAL,
-    description TEXT,
-    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-);
-
--- Exploration sessions (for learning/replay)
-CREATE TABLE sessions (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    started_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    ended_at TIMESTAMP,
-    cells_explored INTEGER DEFAULT 0,
-    distance_traveled REAL DEFAULT 0,
-    notes TEXT
-);
-
--- Sensor log (optional, for debugging/replay)
-CREATE TABLE sensor_log (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    session_id INTEGER REFERENCES sessions(id),
-    timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    x REAL,
-    y REAL,
-    heading REAL,
-    distance_cm INTEGER,
-    line_left INTEGER,
-    line_center INTEGER,
-    line_right INTEGER
-);
 ```
+    [hallway_1] ──── [living_room] ──── [kitchen]
+         │                │
+    [bedroom_1]      [front_door]
+```
+
+### Place Node Structure
+
+```typescript
+interface Place {
+  id: string;
+  signature: {
+    tof_fingerprint: number[];    // Binned scan at this location
+    camera_stills: string[];      // 3-5 reference images
+    semantic_labels: string[];    // "couch", "doorway", "window"
+  };
+  tags: string[];                 // "open_area", "narrow", "cluttered"
+  visit_count: number;
+  last_visited: Date;
+  typical_obstacles: string[];
+}
+```
+
+### Edge Structure
+
+```typescript
+interface Edge {
+  from: string;
+  to: string;
+  action: string;               // "forward_2m", "turn_left_90"
+  success_rate: number;         // 0-1, learned over time
+  typical_duration_ms: number;
+}
+```
+
+### Loop Closure ("Have I been here?")
+
+Probabilistic matching using:
+1. ToF scan similarity (primary)
+2. Visual similarity (confirmation)
+3. Semantic consistency
+
+This approach:
+- Is robust to odometry drift
+- Provides stable symbols for LLM reasoning
+- Naturally accumulates experience
 
 ---
 
-## MCP Tools for Claude
+## Experience & Memory
 
-### High-Level Tools (Claude uses these)
+The host accumulates experience that improves roaming over time:
 
-```typescript
-// Autonomous exploration
-explore_area(options?: {
-    bounds?: { x: number, y: number, width: number, height: number },
-    max_duration_s?: number,
-    return_to_start?: boolean
-}): Promise<{
-    cells_mapped: number,
-    obstacles_found: number,
-    waypoints_discovered: string[],
-    interesting_findings: string[]
-}>
+| Data | Purpose |
+|------|---------|
+| Place visit counts | Prefer unexplored areas |
+| Edge success/failure rates | Avoid unreliable paths |
+| Object density by place | Inform expectations |
+| Typical obstacles | Predict problems |
+| Recovery frequency | Identify trouble spots |
 
-// Goal-based navigation
-navigate_to(target: string | { x: number, y: number }): Promise<{
-    success: boolean,
-    path_length_cm: number,
-    obstacles_avoided: number,
-    final_position: { x: number, y: number }
-}>
-
-// Get current map
-get_map(format: 'ascii' | 'json'): Promise<string | object>
-
-// Save current location
-mark_location(name: string, notes?: string): Promise<void>
-
-// Plan without executing
-find_path(from: string | Point, to: string | Point): Promise<{
-    path: Point[],
-    distance_cm: number,
-    estimated_time_s: number
-}>
-
-// List known locations
-list_waypoints(): Promise<Waypoint[]>
-```
-
-### Low-Level Tools (server uses internally, Claude rarely needs)
-
-```typescript
-// Direct sensor access
-get_distance(): Promise<number>
-get_line_sensors(): Promise<{ left: number, center: number, right: number }>
-scan_arc(start: number, end: number, step: number): Promise<number[]>
-
-// Direct movement (server uses for path execution)
-drive(direction: string, speed: number, duration_ms: number): Promise<void>
-drive_until_obstacle(speed: number, threshold_cm: number): Promise<number>
-follow_wall(side: 'left' | 'right', duration_ms: number): Promise<void>
-```
+**Result:** Fewer repeated dead ends, smarter exploration, context-aware navigation — without LLM micromanagement.
 
 ---
 
-## Example Interaction Flow
+## Hardware Layers
 
-### Claude: "Explore this room and find the door"
+### Current Setup
 
-```
-1. Claude → MCP: explore_area({ max_duration_s: 120 })
+| Component | Pin(s) | Status |
+|-----------|--------|--------|
+| TB6612 motor driver | D3, D5-D8 | Working |
+| HC-SR04 ultrasonic | D12, D13 | Unreliable (see Known Issues) |
+| SG90 servo (pan) | D10 | Working |
+| 3x line sensors | A0-A2 | Working |
+| RGB LED (status) | D4 | Simplified |
+| Battery voltage | A3 | Working |
+| I2C (available) | A4, A5 | Ready for VL53L1X |
 
-2. MCP Server internally:
-   a. Start frontier-based exploration
-   b. While unexplored cells exist:
-      - Find nearest frontier (unknown cells adjacent to open)
-      - Plan path using A*
-      - Execute path:
-        * Send drive commands to Arduino
-        * Read sensors continuously
-        * Update occupancy grid
-        * Detect and mark obstacles
-      - If path blocked, replan
-   c. Use vision (if available) to identify "door"
-   d. Mark interesting locations as waypoints
+### Planned Upgrades
 
-3. MCP → Claude: {
-     cells_mapped: 847,
-     obstacles_found: 23,
-     waypoints_discovered: ["corner_nw", "corner_se", "door_east"],
-     interesting_findings: ["Door found at east wall, marked as 'door_east'"]
-   }
+| Component | Purpose | Priority |
+|-----------|---------|----------|
+| VL53L1X ToF | Reliable distance (mm precision) | **Ordered** |
+| Wheel encoders | Closed-loop odometry | High |
+| Rear ToF | Safe reversing | Medium |
+| Camera integration | Visual place recognition | Medium |
 
-4. Claude → User: "I explored the room and found a door on the east wall.
-                   The room is approximately 3m x 4m with furniture along
-                   the north wall. I've saved the door location as 'door_east'."
-```
+---
+
+## Arduino Firmware: Slimmed
+
+The firmware has been reduced from 31KB (96%) to 21KB (65%) by removing unused features.
+
+### Removed
+- IR remote control
+- MPU6050 gyroscope
+- Follow mode
+- Rocker/joystick mode
+- Complex LED patterns
+- Key command handler
+
+### Kept
+- Motor control (differential drive)
+- Ultrasonic sensor (5-sample median filtering)
+- Servo control
+- Line tracking mode
+- Obstacle avoidance mode
+- Simple status LED
+
+### Status LED Colors
+
+| Color | Meaning |
+|-------|---------|
+| Green | Standby (ready) |
+| Yellow | Line tracking mode |
+| Orange | Obstacle avoidance mode |
+| Blue | Active/other modes |
+| Red blink | Low battery warning |
+
+### Future Firmware Additions
+
+Once VL53L1X arrives:
+- ToF driver (I2C on A4/A5)
+- Watchdog timer (stop if host silent 300-500ms)
+- Time-bounded motion primitives
+- Safety envelope enforcement
 
 ---
 
 ## Implementation Phases
 
-### Phase 1: Slim Firmware
-- [ ] Remove IRremote, MPU6050, RGB, voice code
-- [ ] Keep only: motors, ultrasonic, servo, line sensors
-- [ ] Add: DriveUntilObstacle, ScanArc commands
-- [ ] Test basic operation
+### Phase 1: Stable Reactive Substrate — IN PROGRESS
 
-### Phase 2: Server Navigation Module
-- [ ] Implement OccupancyGrid class
-- [ ] Implement A* Pathfinder
-- [ ] Add SQLite storage for grid and waypoints
-- [ ] Create NavigationBehaviors class
+**Objective:** Create a trustworthy physical layer that higher layers can rely on.
 
-### Phase 3: High-Level MCP Tools
-- [ ] Implement explore_area tool
-- [ ] Implement navigate_to tool
-- [ ] Implement get_map tool
-- [ ] Wire up to Claude
+- [x] Slim firmware (removed ~10KB)
+- [x] Ultrasonic median filtering
+- [x] Connection stability improvements
+- [ ] VL53L1X ToF integration (hardware ordered)
+- [ ] Safety envelope (hard stop < D_stop)
+- [ ] Watchdog timeout (300-500ms)
 
-### Phase 4: Refinement
-- [ ] Add sensor streaming for faster updates
-- [ ] Improve localization (reduce drift)
-- [ ] Add visual landmark support (if camera used)
-- [ ] Tune exploration algorithms
+**Success criteria:** No collisions, smooth motion under WiFi jitter, deterministic behavior.
 
 ---
 
-## Hardware Considerations
+### Phase 2: Host as Tactical Brain
 
-### Current Setup (works now)
-- Arduino Uno (via Elegoo shield)
-- TB6612 motor driver
-- HC-SR04 ultrasonic
-- SG90 servo (pan)
-- 3x ITR20001 line sensors
+**Objective:** Decouple LLM reasoning time from control timing.
 
-### Future Improvements
-| Addition | Benefit |
-|----------|---------|
-| Wheel encoders | Accurate odometry, reduces drift |
-| Second ultrasonic (rear) | Reverse safely |
-| Compass/IMU | Heading accuracy |
-| Better servo | Faster scanning |
+- [ ] Time-bounded motion primitives (`SET_TWIST`)
+- [ ] Host-side gap following from scan bins
+- [ ] Automatic recovery (backup → turn → rescan)
+- [ ] Speed limiting near obstacles
+- [ ] Action timeouts
+
+**Success criteria:** LLM can pause/think without affecting motion. Host handles all "robot reflexes."
+
+---
+
+### Phase 3: Place Graph Mapping
+
+**Objective:** Build a map useful for reasoning, not just geometry.
+
+- [ ] Place node creation from sensor signatures
+- [ ] Edge creation when moving between places
+- [ ] Loop closure detection
+- [ ] SQLite storage for persistence
+- [ ] Semantic labeling (with vision, optional)
+
+**Success criteria:** Robot can recognize "I've been here before" and navigate between named places.
+
+---
+
+### Phase 4: Full MCP Interface
+
+**Objective:** Expose high-level tools to the LLM.
+
+- [ ] `explore()` — autonomous frontier exploration
+- [ ] `goto(place_id)` — place-to-place navigation
+- [ ] `observe()` — structured environment summary
+- [ ] `list_places()` / `describe_place()`
+- [ ] `set_constraints()`
+- [ ] Deprecate/hide low-level tools from LLM
+
+**Success criteria:** LLM can command "explore the room" and receive meaningful results without micromanaging.
+
+---
+
+### Phase 5: Experience & Learning
+
+**Objective:** Roaming improves over time.
+
+- [ ] Track edge success/failure rates
+- [ ] Track place visit frequency
+- [ ] Prefer unexplored frontiers
+- [ ] Avoid historically problematic areas
+- [ ] Summarize experience for LLM context
+
+**Success criteria:** Second exploration of same space is faster and more efficient than first.
+
+---
+
+### Phase 6: Encoders (Reliability Improvement)
+
+**Objective:** Improve navigation accuracy without changing MCP contract.
+
+- [ ] Closed-loop speed control
+- [ ] Odometry (x, y, θ) with uncertainty
+- [ ] Better loop closure confidence
+
+**Important:** Encoders make roaming more reliable but do not change how the LLM interacts with the robot.
+
+---
+
+## Guiding Principles
+
+1. **Safety is never delegated to the LLM** — Arduino enforces hard limits
+2. **Timing-sensitive logic stays local** — Host and Arduino handle real-time
+3. **LLMs reason over symbols, not signals** — Places, not centimeters
+4. **Memory lives on the host** — Experience accumulates locally
+5. **Hardware can change without breaking the MCP** — ToF replaces ultrasonic, LLM doesn't know
+
+---
+
+## End State Vision
+
+A robot where:
+- Any LLM can connect via MCP
+- The robot roams safely on its own
+- Experience accumulates over days
+- Strategy improves without retraining
+- Hardware upgrades are transparent
+
+> The robot becomes an embodied, persistent tool — not a remote-controlled toy.
 
 ---
 
@@ -478,5 +434,5 @@ follow_wall(side: 'left' | 'right', duration_ms: number): Promise<void>
 
 - [Micromouse algorithms](https://en.wikipedia.org/wiki/Micromouse)
 - [Frontier-based exploration](https://en.wikipedia.org/wiki/Frontier-based_exploration)
+- [Topological mapping](https://en.wikipedia.org/wiki/Topological_map)
 - [A* pathfinding](https://en.wikipedia.org/wiki/A*_search_algorithm)
-- [Occupancy grid mapping](https://en.wikipedia.org/wiki/Occupancy_grid_mapping)

@@ -1,175 +1,141 @@
 # Roadmap
 
-> For design rationale and architecture details, see [ARCHITECTURE.md](./ARCHITECTURE.md)
+> For design rationale and layer contracts, see [ARCHITECTURE.md](./ARCHITECTURE.md)
 
 ---
 
-## Priority List
+## Current State
 
-Ordered by impact and dependency:
+### Completed (2026-01-26)
 
-| # | Task | Why First |
-|---|------|-----------|
-| 1 | Fix ultrasonic sensor | Blocks all navigation features |
-| 2 | Slim Arduino firmware | Clean foundation, add reactive commands |
-| 3 | Build server navigation module | Occupancy grid, A*, behaviors |
-| 4 | High-level MCP tools | `explore_area()`, `navigate_to()` |
-| 5 | Refinement | Performance, reliability, polish |
+- [x] Firmware slimmed: 31KB → 21KB (65%)
+- [x] Removed: IR remote, MPU6050, Follow mode, Rocker mode, complex LEDs
+- [x] Ultrasonic: 5-sample median filtering in firmware
+- [x] Ultrasonic: MCP-side smoothing for jumps >40cm
+- [x] Connection stability: Commands wait for reconnection
+- [x] Connection stability: Immediate reconnect, then 2s interval
+- [x] Status LED simplified (green/yellow/orange/blue/red blink)
+- [x] I2C pins freed (A4/A5) for VL53L1X
 
----
+### Known Issues
 
-## Current State (v1.0)
-
-### Working
-- [x] Basic movement commands (drive, turn, stop)
-- [x] Camera capture (still images)
-- [x] Servo pan control
-- [x] Dead reckoning waypoint navigation
-- [x] Command queue for stability
-- [x] Auto-reconnection on WiFi drops
-- [x] Custom Arduino firmware base (`SmartCarModified/`)
-- [x] Makefile build system (`make flash-modified`)
-- [x] Consolidated pin definitions (`pins.h`)
-- [x] Consolidated constants (`config.h`)
-
-### Known Bugs
 See [KNOWN_ISSUES.md](./KNOWN_ISSUES.md) for details.
-- [ ] Ultrasonic returns boolean instead of cm (fix identified)
-- [ ] Connection drops intermittently
-- [ ] Line sensor async response not fully parsed
+
+- **HC-SR04 ultrasonic unreliable** — VL53L1X ordered as replacement
+- **Connection drops** — Improved but not eliminated
+- **Line sensors async response** — Partial implementation
 
 ---
 
-## Phase 1: Slim Firmware
+## Phase 1: Stable Reactive Substrate — IN PROGRESS
 
-Strip Arduino firmware down to navigation essentials.
+**Goal:** A trustworthy physical layer that won't crash regardless of host behavior.
 
-### Remove
-- [ ] IRremote library (~50KB)
-- [ ] MPU6050 library (~85KB)
-- [ ] LED animations & expressions (keep status only)
-- [ ] Voice control code
-- [ ] Mode button handling
-- [ ] Follow mode
-- [ ] Rocker (joystick) mode
-- [ ] ArduinoJson (use simple parser)
+| Task | Status | Notes |
+|------|--------|-------|
+| Slim firmware | Done | 21KB (65%) |
+| Ultrasonic filtering | Done | 5-sample median |
+| Connection stability | Done | Wait-for-reconnect |
+| **VL53L1X ToF driver** | Waiting | Hardware ordered |
+| Safety envelope | Blocked | Needs ToF for reliable distance |
+| Watchdog timeout | Blocked | After ToF integration |
 
-### Keep
-- [x] Motor driver (TB6612)
-- [x] Ultrasonic sensor (HC-SR04)
-- [x] Servo (pan)
-- [x] Line sensors (3x IR)
-- [x] Serial command interface
-- [ ] RGB LED (minimal status indicator only)
-
-### Add
-- [ ] Status LED helper (`setStatusLED(color)`)
-- [ ] `CMD_DriveUntilObstacle(speed, threshold_cm)`
-- [ ] `CMD_ScanArc(start_angle, end_angle, step)`
-- [ ] `CMD_FollowWall(side, speed, duration_ms)`
-- [ ] `CMD_StartSensorStream(interval_ms)`
-- [ ] `CMD_StopSensorStream()`
+**Next steps when VL53L1X arrives:**
+1. Wire to A4 (SDA), A5 (SCL), 3.3V, GND
+2. Add Pololu VL53L1X library to firmware
+3. Replace `DeviceDriverSet_ULTRASONIC` with ToF calls
+4. Add safety envelope (hard stop < 10cm, slow < 25cm)
+5. Add watchdog (stop if no command for 300-500ms)
 
 ---
 
-## Phase 2: Server Navigation Module
+## Phase 2: Host as Tactical Brain
 
-Build the "brain" in the MCP server.
+**Goal:** Host handles all real-time decisions. LLM can pause without affecting motion.
 
-### Occupancy Grid
-- [ ] `OccupancyGrid` class (cell states: unknown/wall/open/visited)
-- [ ] Grid update from sensor readings
-- [ ] ASCII and JSON export
-- [ ] Configurable resolution (cm per cell)
+| Task | Status | Depends On |
+|------|--------|------------|
+| Time-bounded motion primitives | Not started | Phase 1 |
+| Gap following from scan bins | Not started | ToF scans |
+| Automatic recovery behaviors | Not started | — |
+| Speed limiting near obstacles | Not started | ToF |
+| Action timeouts | Not started | — |
 
-### Pathfinding
-- [ ] A* pathfinder implementation
-- [ ] Path replanning on obstacle detection
-- [ ] Waypoint-to-waypoint navigation
-
-### SQLite Storage
-- [ ] `grid_cells` table (x, y, state, confidence)
-- [ ] `waypoints` table (name, x, y, heading)
-- [ ] `sessions` table (exploration history)
-- [ ] `sensor_log` table (optional, for replay/debug)
-
-### Navigation Behaviors
-- [ ] Frontier-based exploration
-- [ ] Wall following
-- [ ] Spiral search pattern
+**Key deliverable:** `SET_TWIST(v_mm_s, w_deg_s, duration_ms)` command that executes locally with safety enforcement.
 
 ---
 
-## Phase 3: High-Level MCP Tools
+## Phase 3: Place Graph Mapping
 
-Tools Claude uses for strategic commands.
+**Goal:** Map that's useful for LLM reasoning, not just geometry.
 
-### Core Tools
-- [ ] `explore_area(bounds?, max_duration_s?)` → autonomous mapping
-- [ ] `navigate_to(target)` → goal-based pathfinding
-- [ ] `get_map(format)` → return current occupancy grid
-- [ ] `mark_location(name, notes?)` → save waypoint
-- [ ] `find_path(from, to)` → plan without executing
-- [ ] `list_waypoints()` → return saved locations
+| Task | Status | Depends On |
+|------|--------|------------|
+| Place node creation | Not started | ToF scans |
+| Edge creation between places | Not started | Odometry or timing |
+| Loop closure detection | Not started | Place signatures |
+| SQLite persistence | Not started | — |
+| Semantic labeling (vision) | Not started | Camera integration |
 
-### Fix Existing Tools
-- [ ] `get_distance()` → return actual cm (not boolean estimate)
-- [ ] `get_line_sensors()` → properly parse async response
+**Key insight:** Topological map (place graph) is more robust to drift and easier for LLMs to reason about than pure occupancy grids.
 
 ---
 
-## Phase 4: Refinement
+## Phase 4: Full MCP Interface
 
-Polish and optimize.
+**Goal:** LLM uses high-level intent tools, not motor commands.
 
-### Performance
-- [ ] Sensor streaming mode (continuous updates vs polling)
-- [ ] Faster servo scanning
-- [ ] Reduce command latency
+| Tool | Status | Description |
+|------|--------|-------------|
+| `explore()` | Not started | Autonomous frontier exploration |
+| `goto(place_id)` | Not started | Place-to-place navigation |
+| `observe()` | Not started | Structured environment summary |
+| `list_places()` | Not started | Get known locations |
+| `describe_place()` | Not started | Details about a place |
+| `set_constraints()` | Not started | Speed limits, no-go zones |
 
-### Localization
-- [ ] Reduce dead reckoning drift
-- [ ] Visual landmark support (if camera used)
-- [ ] Position confidence tracking
-
-### Reliability
-- [ ] Better connection health monitoring
-- [ ] Graceful degradation on sensor failure
-- [ ] Recovery from stuck states
+**Current tools to deprecate (hide from LLM):**
+- `drive()` — too low-level
+- `get_distance()` — raw sensor data
 
 ---
 
-## Future (Nice to Have)
+## Phase 5: Experience & Learning
 
-### ESP32 Custom Firmware
-Requires USB-to-TTL adapter for flashing.
-- [ ] Stable TCP server with proper keep-alive
-- [ ] WebSocket support
-- [ ] OTA updates
+**Goal:** Robot gets better at roaming over time.
 
-### Computer Vision
-- [ ] Object detection (YOLO/MobileNet)
-- [ ] Text recognition (OCR)
-- [ ] ArUco marker detection for localization
-
-### Multi-Robot
-- [ ] Fleet coordination
-- [ ] Collision avoidance between robots
-
-### Integrations
-- [ ] Home Assistant
-- [ ] Voice control
+| Task | Status |
+|------|--------|
+| Track edge success/failure rates | Not started |
+| Track place visit frequency | Not started |
+| Prefer unexplored frontiers | Not started |
+| Avoid problematic areas | Not started |
+| Summarize experience for LLM | Not started |
 
 ---
 
-## Hardware Wishlist
+## Phase 6: Encoders
 
-| Item | Purpose |
-|------|---------|
-| Wheel encoders | Accurate odometry |
-| USB-to-TTL adapter | Flash ESP32 firmware |
-| Second ultrasonic (rear) | Safe reversing |
-| Compass/IMU | Heading accuracy |
+**Goal:** Improve reliability without changing MCP contract.
+
+| Task | Status | Notes |
+|------|--------|-------|
+| Select encoder hardware | Not started | Hall effect or optical |
+| Closed-loop speed control | Not started | — |
+| Odometry (x, y, θ) | Not started | With uncertainty |
+
+**Important:** This phase improves accuracy but doesn't change how LLM interacts with robot.
+
+---
+
+## Hardware Priority Queue
+
+| Item | Purpose | Status |
+|------|---------|--------|
+| VL53L1X ToF | Reliable distance sensing | **Ordered** |
+| Wheel encoders | Odometry | Planning |
+| Rear ToF | Safe reversing | Future |
+| Camera improvements | Visual place recognition | Future |
 
 ---
 
@@ -180,4 +146,13 @@ Requires USB-to-TTL adapter for flashing.
 - [ ] TypeScript strict mode
 - [ ] Better error types
 - [ ] Logging configuration
-- [ ] Docker container
+
+---
+
+## Future Ideas (Unprioritized)
+
+- ESP32 custom firmware (needs USB-TTL adapter)
+- Object detection with camera
+- ArUco markers for localization
+- Home Assistant integration
+- Multi-robot coordination
