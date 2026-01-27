@@ -106,10 +106,17 @@ class RobotClient:
     CMD_GROUND_CHECK = 23   # N=23: ping/status
     CMD_STANDBY = 100       # N=100: stop all
 
-    # Motor direction values
+    # Motor direction values (for CMD_MOTOR_CONTROL)
     MOTOR_STOP = 0
     MOTOR_FORWARD = 1
     MOTOR_BACKWARD = 2
+
+    # Car direction values (for CMD_CAR_DIRECTION)
+    CAR_FORWARD = 0
+    CAR_BACKWARD = 1
+    CAR_LEFT = 2
+    CAR_RIGHT = 3
+    CAR_STOP = 8
 
     _instance: Optional["RobotClient"] = None
     _lock = threading.Lock()
@@ -258,13 +265,12 @@ class RobotClient:
         """
         Start driving without waiting - returns immediately.
 
-        This is the key method for smooth continuous motion. The motors will
-        keep running until either:
-        1. A new command is sent (including stop)
-        2. The ESP32 times out (~500ms of no new commands)
+        Uses CMD_CAR_DIRECTION (N=3) which is designed for sustained directional
+        movement. This higher-level command should maintain motion better than
+        individual motor control.
 
-        For smooth motion, call this repeatedly (every 200-300ms) with the
-        same or new direction before the previous command expires.
+        For smooth motion, call this repeatedly (every 150-200ms) with the
+        same or new direction.
 
         Args:
             direction: "forward", "backward", "left", "right"
@@ -275,21 +281,15 @@ class RobotClient:
         """
         mapped_speed = int((speed / 100) * 250)
 
-        # Don't send STANDBY - it causes a brief pause
-        # Just send the motor command directly
-
+        # Use CMD_CAR_DIRECTION for smoother sustained motion
         if direction == "forward":
-            success, latency, _ = self.send_raw(self.CMD_MOTOR_CONTROL, 0, mapped_speed, self.MOTOR_FORWARD)
+            success, latency, _ = self.send_raw(self.CMD_CAR_DIRECTION, self.CAR_FORWARD, mapped_speed)
         elif direction == "backward":
-            success, latency, _ = self.send_raw(self.CMD_MOTOR_CONTROL, 0, mapped_speed, self.MOTOR_BACKWARD)
+            success, latency, _ = self.send_raw(self.CMD_CAR_DIRECTION, self.CAR_BACKWARD, mapped_speed)
         elif direction == "left":
-            # Turn left while stationary: right forward, left backward
-            self.send_raw(self.CMD_MOTOR_CONTROL, 1, mapped_speed, self.MOTOR_FORWARD)
-            success, latency, _ = self.send_raw(self.CMD_MOTOR_CONTROL, 2, mapped_speed, self.MOTOR_BACKWARD)
+            success, latency, _ = self.send_raw(self.CMD_CAR_DIRECTION, self.CAR_LEFT, mapped_speed)
         elif direction == "right":
-            # Turn right while stationary: left forward, right backward
-            self.send_raw(self.CMD_MOTOR_CONTROL, 2, mapped_speed, self.MOTOR_FORWARD)
-            success, latency, _ = self.send_raw(self.CMD_MOTOR_CONTROL, 1, mapped_speed, self.MOTOR_BACKWARD)
+            success, latency, _ = self.send_raw(self.CMD_CAR_DIRECTION, self.CAR_RIGHT, mapped_speed)
         else:
             return {"success": False, "error": f"Unknown direction: {direction}"}
 

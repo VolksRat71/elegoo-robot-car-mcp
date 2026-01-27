@@ -104,7 +104,6 @@ function App() {
           />
           <Telemetry
             worldState={snapshot?.world_state}
-            robotConnected={snapshot?.robot_connected ?? false}
             lastUpdate={lastUpdate ?? undefined}
             detections={snapshot?.detection?.detected_objects ?? []}
           />

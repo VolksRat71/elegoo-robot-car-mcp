@@ -2,14 +2,12 @@ import type { WorldState, DetectedObject } from '../types';
 
 interface TelemetryProps {
   worldState?: WorldState;
-  robotConnected: boolean;
   lastUpdate?: number;
   detections: DetectedObject[];
 }
 
 export function Telemetry({
   worldState,
-  robotConnected,
   lastUpdate,
   detections,
 }: TelemetryProps) {
