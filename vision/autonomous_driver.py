@@ -347,6 +347,55 @@ def save_snapshot(frame: np.ndarray, state: DriverState, config: Config, depth: 
     print(f"[SNAP] Saved {filename}")
 
 
+# === Nudge System (Claude Copilot) ===
+
+NUDGES_PATH = Path(__file__).parent / "nudges.json"
+
+def load_nudges() -> dict:
+    """Load navigation nudges from Claude."""
+    try:
+        if NUDGES_PATH.exists():
+            with open(NUDGES_PATH) as f:
+                return json.load(f)
+    except Exception as e:
+        print(f"[NUDGE] Error loading nudges: {e}")
+    return {"active": False}
+
+
+def apply_nudge_bias(decision: "Decision", depth: "DepthZones", nudges: dict) -> "Decision":
+    """Apply Claude's navigation nudges to bias the decision."""
+    if not nudges.get("active", False):
+        return decision
+
+    prefer = nudges.get("prefer_direction")
+    bias = nudges.get("bias_strength", 0.3)
+
+    # Only apply nudge when there's a choice (not in danger/wall situations)
+    if decision in (Decision.STOP, Decision.REVERSE):
+        return decision
+
+    # Bias toward preferred direction when both sides are similar
+    if prefer == "left":
+        if decision == Decision.TURN_RIGHT and depth.left < depth.right + (bias * 100):
+            print(f"[NUDGE] Biasing left (Claude preference)")
+            return Decision.TURN_LEFT
+        if decision == Decision.TURN_RIGHT_LARGE and depth.left < depth.right + (bias * 100):
+            return Decision.TURN_LEFT_LARGE
+        # Prefer turning left when going forward and sides are balanced
+        if decision in (Decision.FORWARD, Decision.FORWARD_SLOW):
+            if abs(depth.left - depth.right) < 15:  # Balanced
+                return decision  # Keep going, but next turn will prefer left
+
+    elif prefer == "right":
+        if decision == Decision.TURN_LEFT and depth.right < depth.left + (bias * 100):
+            print(f"[NUDGE] Biasing right (Claude preference)")
+            return Decision.TURN_RIGHT
+        if decision == Decision.TURN_LEFT_LARGE and depth.right < depth.left + (bias * 100):
+            return Decision.TURN_RIGHT_LARGE
+
+    return decision
+
+
 # === Decision Engine ===
 
 def smooth_depth(current: DepthZones, previous: Optional[DepthZones], alpha: float) -> DepthZones:
@@ -507,6 +556,10 @@ def run_driver(duration_s: int, config: Config, dry_run: bool = False):
 
             # Decide
             decision = make_decision(state.smoothed_depth, state, config)
+
+            # Apply Claude's nudges (copilot mode)
+            nudges = load_nudges()
+            decision = apply_nudge_bias(decision, state.smoothed_depth, nudges)
 
             # Check if we should do head swing to find better path
             do_head_swing = False

@@ -23,6 +23,7 @@ import numpy as np
 
 from models import DepthEstimator, ObjectDetector
 from robot_client import RobotClient, CameraStream, get_robot, get_camera
+from montage import get_journey_montage, load_nudges, save_nudges, update_nudge
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -367,6 +368,105 @@ async def camera_stop():
     camera = get_camera()
     camera.stop()
     return {"success": True}
+
+
+# === Claude Copilot Endpoints ===
+# Montage and nudge system for Claude to review journey and provide navigation hints
+
+
+class NudgeRequest(BaseModel):
+    """Request body for /nudge endpoint."""
+    active: Optional[bool] = None
+    goal: Optional[str] = None
+    prefer_direction: Optional[Literal["left", "right"]] = None
+    bias_strength: Optional[float] = None  # 0.0-1.0
+    look_for: Optional[list[str]] = None  # Objects to seek
+    avoid: Optional[list[str]] = None  # Objects to avoid
+    notes: Optional[str] = None
+
+
+@app.get("/montage")
+async def get_montage(count: int = 6):
+    """
+    Get a montage of recent drive snapshots for Claude to review.
+
+    Args:
+        count: Number of snapshots to include (default: 6)
+
+    Returns:
+        - success: Whether montage was created
+        - image_base64: Base64 JPEG of the montage grid
+        - snapshot_count: Number of snapshots included
+        - snapshots: List of snapshot filenames
+        - width/height: Montage dimensions
+    """
+    result = get_journey_montage(count)
+    if not result["success"]:
+        raise HTTPException(status_code=404, detail=result.get("error", "No snapshots available"))
+    return result
+
+
+@app.get("/nudges")
+async def get_nudges():
+    """Get current navigation nudges."""
+    return load_nudges()
+
+
+@app.post("/nudge")
+async def set_nudge(request: NudgeRequest):
+    """
+    Set navigation nudges for Claude copilot mode.
+
+    The autonomous driver hot-reloads these nudges to bias its decisions.
+
+    Args:
+        - active: Enable/disable nudge system
+        - goal: High-level goal description (e.g., "find the kitchen")
+        - prefer_direction: Bias toward "left" or "right"
+        - bias_strength: How strongly to apply bias (0.0-1.0, default 0.3)
+        - look_for: Objects to seek (e.g., ["chair", "table"])
+        - avoid: Objects to avoid (e.g., ["person", "dog"])
+        - notes: Freeform notes
+
+    Returns:
+        Updated nudge settings
+    """
+    current = load_nudges()
+
+    # Update only provided fields
+    if request.active is not None:
+        current["active"] = request.active
+    if request.goal is not None:
+        current["goal"] = request.goal
+    if request.prefer_direction is not None:
+        current["prefer_direction"] = request.prefer_direction
+    if request.bias_strength is not None:
+        current["bias_strength"] = max(0.0, min(1.0, request.bias_strength))
+    if request.look_for is not None:
+        current["look_for"] = request.look_for
+    if request.avoid is not None:
+        current["avoid"] = request.avoid
+    if request.notes is not None:
+        current["notes"] = request.notes
+
+    save_nudges(current)
+    return current
+
+
+@app.post("/nudge/clear")
+async def clear_nudges():
+    """Reset nudges to default (inactive) state."""
+    default_nudges = {
+        "active": False,
+        "goal": None,
+        "prefer_direction": None,
+        "bias_strength": 0.3,
+        "look_for": [],
+        "avoid": [],
+        "notes": "Claude's navigation hints - hot-reloaded by driver"
+    }
+    save_nudges(default_nudges)
+    return default_nudges
 
 
 # === Combined Status ===

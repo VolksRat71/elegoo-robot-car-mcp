@@ -42,3 +42,5 @@ firmware/arduino/build/
 # Logs
 *.log
 npm-debug.log*
+drive_snapshots/
+nudges.json

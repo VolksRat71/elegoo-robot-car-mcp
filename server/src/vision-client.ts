@@ -42,6 +42,26 @@ export interface VisionAnalysisResult {
   error?: string;
 }
 
+export interface MontageResult {
+  success: boolean;
+  image_base64?: string;
+  snapshot_count?: number;
+  snapshots?: string[];
+  width?: number;
+  height?: number;
+  error?: string;
+}
+
+export interface NudgeSettings {
+  active: boolean;
+  goal: string | null;
+  prefer_direction: "left" | "right" | null;
+  bias_strength: number;
+  look_for: string[];
+  avoid: string[];
+  notes: string;
+}
+
 const DEFAULT_VISION_URL = "http://localhost:8765";
 
 export class VisionClient {
@@ -131,6 +151,108 @@ export class VisionClient {
         success: false,
         error: `Vision service error: ${error instanceof Error ? error.message : "Unknown"}`,
       };
+    }
+  }
+
+  /**
+   * Get journey montage (grid of recent drive snapshots)
+   */
+  async getMontage(count: number = 6): Promise<MontageResult> {
+    try {
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), this.timeout);
+
+      const response = await fetch(`${this.baseUrl}/montage?count=${count}`, {
+        signal: controller.signal,
+      });
+      clearTimeout(timeoutId);
+
+      if (!response.ok) {
+        return {
+          success: false,
+          error: `Montage request failed: ${response.status} ${response.statusText}`,
+        };
+      }
+
+      return (await response.json()) as MontageResult;
+    } catch (error) {
+      if (error instanceof Error && error.name === "AbortError") {
+        return { success: false, error: "Montage request timed out" };
+      }
+      return {
+        success: false,
+        error: `Montage error: ${error instanceof Error ? error.message : "Unknown"}`,
+      };
+    }
+  }
+
+  /**
+   * Get current nudge settings
+   */
+  async getNudges(): Promise<NudgeSettings | null> {
+    try {
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 2000);
+
+      const response = await fetch(`${this.baseUrl}/nudges`, {
+        signal: controller.signal,
+      });
+      clearTimeout(timeoutId);
+
+      if (response.ok) {
+        return (await response.json()) as NudgeSettings;
+      }
+      return null;
+    } catch {
+      return null;
+    }
+  }
+
+  /**
+   * Set nudge settings for Claude copilot mode
+   */
+  async setNudge(settings: Partial<NudgeSettings>): Promise<NudgeSettings | null> {
+    try {
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 2000);
+
+      const response = await fetch(`${this.baseUrl}/nudge`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(settings),
+        signal: controller.signal,
+      });
+      clearTimeout(timeoutId);
+
+      if (response.ok) {
+        return (await response.json()) as NudgeSettings;
+      }
+      return null;
+    } catch {
+      return null;
+    }
+  }
+
+  /**
+   * Clear all nudges
+   */
+  async clearNudges(): Promise<NudgeSettings | null> {
+    try {
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 2000);
+
+      const response = await fetch(`${this.baseUrl}/nudge/clear`, {
+        method: "POST",
+        signal: controller.signal,
+      });
+      clearTimeout(timeoutId);
+
+      if (response.ok) {
+        return (await response.json()) as NudgeSettings;
+      }
+      return null;
+    } catch {
+      return null;
     }
   }
 }
