@@ -14,16 +14,13 @@ import { readFile, stat } from "fs/promises";
 import { join, extname } from "path";
 import { fileURLToPath } from "url";
 
-import { getStockRobotClient } from "./robot-client-stock.js";
+import { getRobotClient } from "./robot-client.js";
 import { getMapStore } from "./map-store.js";
 import { getVisionServiceManager } from "./vision-service-manager.js";
 import { handleDashboardApi } from "./dashboard-api.js";
 
 // Get directory of this file for resolving static assets
 const __dirname = fileURLToPath(new URL(".", import.meta.url));
-
-// Use stock client for Elegoo's built-in firmware
-const getRobotClient = getStockRobotClient;
 import { movementTools } from "./tools/movement.js";
 import { visionTools } from "./tools/vision.js";
 import { sensorTools } from "./tools/sensors.js";

@@ -5,7 +5,7 @@
  * This is the contract between the tactical host layer and the strategic LLM layer.
  */
 
-import { getStockRobotClient } from "../robot-client-stock.js";
+import { getRobotClient } from "../robot-client.js";
 import { getMapStore } from "../map-store.js";
 import { getAutonomyStateMachine } from "./state-machine.js";
 import { getVisionClient, type VisionAnalysisResult } from "../vision-client.js";
@@ -94,7 +94,7 @@ export interface BuildWorldStateOptions {
  * @param options Configuration options for building WorldState
  */
 export async function buildWorldState(options: BuildWorldStateOptions = {}): Promise<WorldState> {
-  const robot = getStockRobotClient();
+  const robot = getRobotClient();
   const mapStore = getMapStore();
   const stateMachine = getAutonomyStateMachine();
   const visionClient = getVisionClient();

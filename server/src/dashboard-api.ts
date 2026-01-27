@@ -6,7 +6,7 @@
  */
 
 import { IncomingMessage, ServerResponse } from "http";
-import { getStockRobotClient } from "./robot-client-stock.js";
+import { getRobotClient } from "./robot-client.js";
 import { buildWorldState } from "./autonomy/world-state.js";
 import { getVisionClient } from "./vision-client.js";
 import { captureImage } from "./tools/vision.js";
@@ -46,7 +46,7 @@ interface Snapshot {
  * Returns current robot state, camera image, and vision analysis
  */
 async function handleSnapshot(): Promise<Snapshot> {
-  const robot = getStockRobotClient();
+  const robot = getRobotClient();
   const visionClient = getVisionClient();
 
   // Check service availability
@@ -105,7 +105,7 @@ async function handleSnapshot(): Promise<Snapshot> {
 async function handleCommand(
   body: CommandRequest
 ): Promise<{ success: boolean; message?: string; error?: string }> {
-  const robot = getStockRobotClient();
+  const robot = getRobotClient();
   const { command, params = {} } = body;
 
   try {

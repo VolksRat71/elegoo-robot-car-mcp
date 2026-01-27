@@ -42,6 +42,7 @@ export class RobotProxy extends EventEmitter {
   private serviceUrl: string;
   private _connected: boolean = false;
   private lastPosition = { x: 0, y: 0, heading: 0 };
+  private lastDistance: number = 999;
 
   constructor(serviceUrl: string = "http://localhost:8765") {
     super();
@@ -229,11 +230,21 @@ export class RobotProxy extends EventEmitter {
       distance_cm: number | null;
       raw_response: string | null;
     }>("/robot/distance");
+
+    // Cache last reading
+    if (result.distance_cm !== null) {
+      this.lastDistance = result.distance_cm;
+    }
+
     return {
       success: result.success,
       cmd: "distance",
       data: { distance: result.distance_cm },
     };
+  }
+
+  getLastDistance(): number {
+    return this.lastDistance;
   }
 
   async ping(): Promise<RobotResponse> {
