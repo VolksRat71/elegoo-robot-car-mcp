@@ -20,6 +20,18 @@ server/data/*.db
 .DS_Store
 Thumbs.db
 
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+.venv/
+venv/
+ENV/
+*.egg-info/
+.eggs/
+
 # PlatformIO
 firmware/esp32/.pio/
 firmware/esp32/.vscode/
