@@ -265,12 +265,8 @@ class RobotClient:
         """
         Start driving without waiting - returns immediately.
 
-        Uses CMD_CAR_DIRECTION (N=3) which is designed for sustained directional
-        movement. This higher-level command should maintain motion better than
-        individual motor control.
-
-        For smooth motion, call this repeatedly (every 150-200ms) with the
-        same or new direction.
+        Uses CMD_MOTOR_CONTROL for direct motor access. Call frequently
+        (every 100-150ms) to maintain smooth continuous motion.
 
         Args:
             direction: "forward", "backward", "left", "right"
@@ -281,20 +277,19 @@ class RobotClient:
         """
         mapped_speed = int((speed / 100) * 250)
 
-        # Use CMD_CAR_DIRECTION for smoother sustained motion
         if direction == "forward":
-            success, latency, _ = self.send_raw(self.CMD_CAR_DIRECTION, self.CAR_FORWARD, mapped_speed)
+            success, latency, _ = self.send_raw(self.CMD_MOTOR_CONTROL, 0, mapped_speed, self.MOTOR_FORWARD)
         elif direction == "backward":
-            success, latency, _ = self.send_raw(self.CMD_CAR_DIRECTION, self.CAR_BACKWARD, mapped_speed)
+            success, latency, _ = self.send_raw(self.CMD_MOTOR_CONTROL, 0, mapped_speed, self.MOTOR_BACKWARD)
         elif direction == "left":
-            success, latency, _ = self.send_raw(self.CMD_CAR_DIRECTION, self.CAR_LEFT, mapped_speed)
+            self.send_raw(self.CMD_MOTOR_CONTROL, 1, mapped_speed, self.MOTOR_FORWARD)
+            success, latency, _ = self.send_raw(self.CMD_MOTOR_CONTROL, 2, mapped_speed, self.MOTOR_BACKWARD)
         elif direction == "right":
-            success, latency, _ = self.send_raw(self.CMD_CAR_DIRECTION, self.CAR_RIGHT, mapped_speed)
+            self.send_raw(self.CMD_MOTOR_CONTROL, 2, mapped_speed, self.MOTOR_FORWARD)
+            success, latency, _ = self.send_raw(self.CMD_MOTOR_CONTROL, 1, mapped_speed, self.MOTOR_BACKWARD)
         else:
             return {"success": False, "error": f"Unknown direction: {direction}"}
 
-        # NO time.sleep() - return immediately
-        # NO self.stop() - let motors keep running
         return {"success": success, "direction": direction, "speed": speed}
 
     def turn(self, degrees: int, speed: int = 50) -> dict:
