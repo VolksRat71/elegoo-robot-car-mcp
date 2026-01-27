@@ -1,12 +1,11 @@
 import { useEffect, useState, useCallback } from 'react';
-import { VisionPanel } from './components/VisionPanel';
-import { DetectionsPanel } from './components/DetectionsPanel';
-import { ControlPanel } from './components/ControlPanel';
-import { StatusPanel } from './components/StatusPanel';
+import { CameraFeed } from './components/CameraFeed';
+import { ControlPad } from './components/ControlPad';
+import { Telemetry } from './components/Telemetry';
 import { fetchSnapshot } from './api';
 import type { Snapshot } from './types';
 
-const POLL_INTERVAL = 1500; // 1.5 seconds
+const POLL_INTERVAL = 1500;
 
 function App() {
   const [snapshot, setSnapshot] = useState<Snapshot | null>(null);
@@ -14,7 +13,6 @@ function App() {
   const [error, setError] = useState<string | null>(null);
   const [lastUpdate, setLastUpdate] = useState<number | null>(null);
   const [isPaused, setIsPaused] = useState(false);
-  const [controlsOpen, setControlsOpen] = useState(false);
 
   const loadSnapshot = useCallback(async () => {
     if (isPaused) return;
@@ -25,7 +23,7 @@ function App() {
       setLastUpdate(Date.now());
       setError(null);
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to fetch data');
+      setError(err instanceof Error ? err.message : 'Connection failed');
     } finally {
       setIsLoading(false);
     }
@@ -37,10 +35,7 @@ function App() {
     return () => clearInterval(interval);
   }, [loadSnapshot]);
 
-  const handleCommandStart = () => {
-    setIsPaused(true);
-  };
-
+  const handleCommandStart = () => setIsPaused(true);
   const handleCommandEnd = () => {
     setTimeout(() => {
       setIsPaused(false);
@@ -49,47 +44,48 @@ function App() {
   };
 
   return (
-    <div className="h-screen flex flex-col overflow-hidden p-4">
-      {/* Header - compact */}
-      <header className="flex-shrink-0 mb-3">
-        <div className="flex items-center justify-between">
-          <div>
-            <h1 className="text-xl font-bold tracking-tight text-[var(--text-primary)]">
-              AI Vision Lab
-            </h1>
-            <p className="text-xs text-[var(--text-muted)]">
-              Elegoo Robot Car / Computer Vision Dashboard
-            </p>
-          </div>
+    <div className="h-screen flex flex-col p-4 gap-3">
+      {/* Top Bar - Title + Status Strip */}
+      <header className="flex items-center justify-between flex-shrink-0">
+        <div className="flex items-center gap-4">
+          <h1 className="font-mono text-sm font-medium tracking-wider text-[var(--bp-cream)]">
+            ELEGOO // VISION CONTROL
+          </h1>
+          <div className="h-4 w-px bg-[var(--bp-line-dim)]" />
           <div className="flex items-center gap-3">
-            {error && (
-              <div className="px-2 py-1 bg-[var(--accent-red)]/10 border border-[var(--accent-red)]/30 rounded text-[var(--accent-red)] text-xs">
-                {error}
-              </div>
-            )}
-            <button
-              onClick={() => setIsPaused(!isPaused)}
-              className={`px-3 py-1.5 rounded text-xs font-medium transition-all ${
-                isPaused
-                  ? 'bg-[var(--accent-orange)]/10 border border-[var(--accent-orange)] text-[var(--accent-orange)]'
-                  : 'bg-[var(--bg-tertiary)] border border-[var(--border-primary)] text-[var(--text-secondary)] hover:border-[var(--accent-cyan)] hover:text-[var(--accent-cyan)]'
-              }`}
-            >
-              {isPaused ? 'Resume' : 'Pause'}
-            </button>
-            <span className="text-xs text-[var(--text-muted)] font-mono">
-              v{snapshot?.world_state?.schema_version || '?'}
-            </span>
+            <StatusIndicator
+              label="LINK"
+              active={snapshot?.robot_connected ?? false}
+            />
+            <StatusIndicator
+              label="CAM"
+              active={snapshot?.vision_available ?? false}
+              warning={!snapshot?.vision_available && !error}
+            />
           </div>
         </div>
-        <div className="mt-2 h-px bg-gradient-to-r from-[var(--accent-cyan)]/50 via-[var(--border-primary)] to-transparent" />
+
+        <div className="flex items-center gap-3">
+          {error && (
+            <span className="bp-tag error">{error}</span>
+          )}
+          <button
+            onClick={() => setIsPaused(!isPaused)}
+            className={`bp-btn px-3 py-1 text-xs ${isPaused ? 'active' : ''}`}
+          >
+            {isPaused ? 'RESUME' : 'PAUSE'}
+          </button>
+          <span className="font-mono text-xs text-[var(--bp-cream-dim)]">
+            v{snapshot?.world_state?.schema_version || '—'}
+          </span>
+        </div>
       </header>
 
-      {/* Main content - fills remaining space */}
-      <div className="flex-1 grid grid-cols-12 gap-3 min-h-0">
-        {/* Vision panels (Camera + Depth) - 8 cols */}
-        <div className="col-span-8 min-h-0">
-          <VisionPanel
+      {/* Main Content */}
+      <div className="flex-1 flex gap-3 min-h-0">
+        {/* Left: Camera Feed (hero) */}
+        <div className="flex-1 min-w-0">
+          <CameraFeed
             cameraImage={snapshot?.camera_image}
             depthImage={snapshot?.depth_image}
             annotatedImage={snapshot?.annotated_image}
@@ -99,50 +95,39 @@ function App() {
           />
         </div>
 
-        {/* Right column: Status + Detections stacked - 4 cols */}
-        <div className="col-span-4 flex flex-col gap-3 min-h-0">
-          <div className="flex-shrink-0">
-            <StatusPanel
-              worldState={snapshot?.world_state}
-              robotConnected={snapshot?.robot_connected ?? false}
-              visionAvailable={snapshot?.vision_available ?? false}
-              lastUpdate={lastUpdate ?? undefined}
-            />
-          </div>
-          <div className="flex-1 min-h-0">
-            <DetectionsPanel
-              detections={snapshot?.detection?.detected_objects ?? []}
-              placeTags={snapshot?.world_state?.semantics?.current_place_tags ?? []}
-            />
-          </div>
-        </div>
-      </div>
-
-      {/* Slide-out Controls Panel */}
-      <div
-        className={`fixed top-1/2 -translate-y-1/2 right-0 z-50 transition-transform duration-300 ${
-          controlsOpen ? 'translate-x-0' : 'translate-x-[calc(100%-40px)]'
-        }`}
-      >
-        {/* Tab */}
-        <button
-          onClick={() => setControlsOpen(!controlsOpen)}
-          className="absolute left-0 top-1/2 -translate-y-1/2 -translate-x-full bg-[var(--bg-panel)] border border-r-0 border-[var(--border-primary)] rounded-l-lg px-2 py-6 hover:border-[var(--accent-cyan)] transition-colors"
-        >
-          <span className="writing-mode-vertical text-xs font-semibold text-[var(--accent-cyan)] tracking-wider">
-            {controlsOpen ? 'CLOSE' : 'CONTROLS'}
-          </span>
-        </button>
-        {/* Panel */}
-        <div className="bg-[var(--bg-panel)] border border-[var(--border-primary)] rounded-l-lg shadow-2xl">
-          <ControlPanel
+        {/* Right: Controls + Telemetry */}
+        <div className="w-72 flex flex-col gap-3 flex-shrink-0">
+          <ControlPad
             onCommandStart={handleCommandStart}
             onCommandEnd={handleCommandEnd}
             disabled={!snapshot?.robot_connected}
-            compact
+          />
+          <Telemetry
+            worldState={snapshot?.world_state}
+            robotConnected={snapshot?.robot_connected ?? false}
+            lastUpdate={lastUpdate ?? undefined}
+            detections={snapshot?.detection?.detected_objects ?? []}
           />
         </div>
       </div>
+    </div>
+  );
+}
+
+function StatusIndicator({
+  label,
+  active,
+  warning,
+}: {
+  label: string;
+  active: boolean;
+  warning?: boolean;
+}) {
+  const statusClass = active ? 'active' : warning ? 'warning' : 'error';
+  return (
+    <div className="bp-status">
+      <div className={`bp-status-dot ${statusClass}`} />
+      <span className="font-mono text-[10px] text-[var(--bp-cream-dim)]">{label}</span>
     </div>
   );
 }

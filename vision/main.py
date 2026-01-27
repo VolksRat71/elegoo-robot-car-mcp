@@ -24,6 +24,7 @@ import numpy as np
 from models import DepthEstimator, ObjectDetector
 from robot_client import RobotClient, CameraStream, get_robot, get_camera
 from montage import get_journey_montage, load_nudges, save_nudges, update_nudge
+from store import get_store
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -469,14 +470,196 @@ async def clear_nudges():
     return default_nudges
 
 
+# === State Store Endpoints ===
+# Waypoints, position, and session data
+
+
+class WaypointRequest(BaseModel):
+    """Request body for /waypoint endpoint."""
+    name: str
+    x: Optional[float] = None  # If None, uses current position
+    y: Optional[float] = None
+    heading: Optional[float] = None
+
+
+@app.get("/waypoints")
+async def list_waypoints():
+    """List all saved waypoints."""
+    store = get_store()
+    waypoints = store.list_waypoints()
+    return [
+        {
+            "name": w.name,
+            "x": round(w.x, 1),
+            "y": round(w.y, 1),
+            "heading": round(w.heading, 1),
+            "created_at": w.created_at
+        }
+        for w in waypoints
+    ]
+
+
+@app.post("/waypoint")
+async def save_waypoint(request: WaypointRequest):
+    """
+    Save current position as a named waypoint.
+    If x/y/heading provided, uses those values instead of current position.
+    """
+    store = get_store()
+    waypoint = store.save_waypoint(
+        name=request.name,
+        x=request.x,
+        y=request.y,
+        heading=request.heading
+    )
+    return {
+        "success": True,
+        "name": waypoint.name,
+        "x": round(waypoint.x, 1),
+        "y": round(waypoint.y, 1),
+        "heading": round(waypoint.heading, 1)
+    }
+
+
+@app.get("/waypoint/{name}")
+async def get_waypoint(name: str):
+    """Get a waypoint by name."""
+    store = get_store()
+    waypoint = store.get_waypoint(name)
+    if not waypoint:
+        raise HTTPException(status_code=404, detail=f"Waypoint '{name}' not found")
+    return {
+        "name": waypoint.name,
+        "x": round(waypoint.x, 1),
+        "y": round(waypoint.y, 1),
+        "heading": round(waypoint.heading, 1),
+        "created_at": waypoint.created_at
+    }
+
+
+@app.delete("/waypoint/{name}")
+async def delete_waypoint(name: str):
+    """Delete a waypoint by name."""
+    store = get_store()
+    deleted = store.delete_waypoint(name)
+    if not deleted:
+        raise HTTPException(status_code=404, detail=f"Waypoint '{name}' not found")
+    return {"success": True, "deleted": name}
+
+
+# === Position Endpoints ===
+
+
+@app.get("/position")
+async def get_position():
+    """Get current robot position estimate (dead reckoning)."""
+    store = get_store()
+    pos = store.get_position()
+    return {
+        "x": round(pos.x, 1),
+        "y": round(pos.y, 1),
+        "heading": round(pos.heading, 1)
+    }
+
+
+@app.post("/position/reset")
+async def reset_position():
+    """Reset position to origin (0, 0, 0)."""
+    store = get_store()
+    store.reset_position()
+    return {"success": True, "x": 0, "y": 0, "heading": 0}
+
+
+class PositionUpdateRequest(BaseModel):
+    """Request body for position update."""
+    x: float
+    y: float
+    heading: float
+
+
+@app.post("/position")
+async def set_position(request: PositionUpdateRequest):
+    """Manually set robot position (e.g., after manual repositioning)."""
+    store = get_store()
+    store.set_position(request.x, request.y, request.heading)
+    return {
+        "success": True,
+        "x": round(request.x, 1),
+        "y": round(request.y, 1),
+        "heading": round(request.heading, 1)
+    }
+
+
+# === Session Endpoints ===
+
+
+@app.get("/sessions")
+async def list_sessions(limit: int = 10):
+    """Get recent driving sessions."""
+    store = get_store()
+    sessions = store.get_recent_sessions(limit)
+    return [
+        {
+            "id": s.id,
+            "started_at": s.started_at,
+            "ended_at": s.ended_at,
+            "duration_s": round(s.duration_s, 1),
+            "distance_cm": round(s.distance_cm, 1),
+            "cells_visited": s.cells_visited,
+            "decisions": s.decisions,
+            "goal": s.goal
+        }
+        for s in sessions
+    ]
+
+
+@app.get("/session/{session_id}")
+async def get_session(session_id: int):
+    """Get a specific session by ID."""
+    store = get_store()
+    session = store.get_session(session_id)
+    if not session:
+        raise HTTPException(status_code=404, detail=f"Session {session_id} not found")
+    return {
+        "id": session.id,
+        "started_at": session.started_at,
+        "ended_at": session.ended_at,
+        "duration_s": round(session.duration_s, 1),
+        "distance_cm": round(session.distance_cm, 1),
+        "cells_visited": session.cells_visited,
+        "decisions": session.decisions,
+        "goal": session.goal
+    }
+
+
+# === Store Stats ===
+
+
+@app.get("/store/stats")
+async def store_stats():
+    """Get database statistics."""
+    store = get_store()
+    return store.get_stats()
+
+
+@app.post("/store/clear")
+async def clear_store():
+    """Clear all store data (sessions, grid) but keep waypoints."""
+    store = get_store()
+    store.clear_grid()
+    store.reset_position()
+    return {"success": True, "message": "Grid and position cleared. Waypoints preserved."}
+
+
 # === Combined Status ===
 
 
 @app.get("/status")
 async def full_status():
-    """Get full status of robot, camera, and vision models."""
+    """Get full status of robot, camera, vision models, and store."""
     robot = get_robot()
     camera = get_camera()
+    store = get_store()
 
     return {
         "robot": {
@@ -488,6 +671,7 @@ async def full_status():
             "depth_loaded": depth_estimator is not None,
             "detection_loaded": object_detector is not None,
         },
+        "store": store.get_stats(),
     }
 
 
