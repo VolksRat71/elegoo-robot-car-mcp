@@ -340,19 +340,115 @@ Claude → Node MCP Server → Python HTTP API → TCP:100 → Robot
 
 ---
 
+---
+
+## 16. Database Migration to Python (Phase 0)
+
+**Problem:** Database was in Node (`server/src/map-store.ts`) but robot control in Python.
+
+**Solution:** Move state to Python since Python owns the robot.
+
+### New File: `vision/store.py`
+```python
+class RobotStore:
+    """SQLite store for waypoints, sessions, position, occupancy."""
+
+    def save_waypoint(name, x, y, heading) -> Waypoint
+    def list_waypoints() -> List[Waypoint]
+    def delete_waypoint(name) -> bool
+    def get_position() -> Position
+    def set_position(x, y, heading)
+    def start_session(goal) -> int
+    def end_session(session_id, ...)
+```
+
+### New Endpoints in `vision/main.py`:
+- `GET /waypoints`, `POST /waypoint`, `DELETE /waypoint/{name}`
+- `GET /position`, `POST /position/reset`
+- `GET /sessions`
+
+### Modified: `server/src/tools/navigation.ts`
+Changed to call Python endpoints instead of local MapStore.
+
+---
+
+## 17. Intelligent Head Scanning (Phase 2)
+
+**Problem:** Robot scanned too often, spent more time data-gathering than moving.
+
+**Evolution:**
+1. Started with timer-based scans (every 4s) - too frequent
+2. Added glance-before-turn - still too much scanning
+3. Final: Only scan when truly uncertain
+
+### Scan Triggers (current):
+| Trigger | Type | Angles | When |
+|---------|------|--------|------|
+| `full:prelaunch` | Full | 5 (30°-150°) | Before first move |
+| `full:circling` | Full | 5 (30°-150°) | 4+ same-direction turns |
+| `full:wall` | Full | 5 (30°-150°) | All zones >35% similar |
+| `quick:ambiguous` | Quick | 3 (45°,90°,135°) | L/R within 5%, center >30% |
+
+### Key Design Decisions:
+- **3-second cooldown** between scans
+- **Frame reuse:** Scan's center frame used by main loop (no double processing)
+- **Circle detection:** Tracks last 5 turns, biases against dominant direction
+- **Default behavior:** Drive, don't overthink
+
+### Files Modified:
+- `vision/autonomous_driver.py` - `HeadScanScheduler` class
+- `vision/config.json` - `head_scan` section
+
+### Config:
+```json
+{
+  "head_scan": {
+    "enabled": true,
+    "settle_time_ms": 150
+  }
+}
+```
+
+---
+
+## 18. Smooth Motion Investigation (Phase 1 - Deferred)
+
+**Goal:** Remove visible start-stop jitter between decisions.
+
+**Investigation:**
+- Added `drive_no_wait()` for non-blocking motor commands
+- Tested overlapping commands for continuous motion
+
+**Conclusion:** Stock Elegoo ESP32 firmware requires blocking waits after motor commands. Would need custom firmware flash to fix. **Accepted limitation for now.**
+
+---
+
+## 19. Research Notes: Micromouse
+
+User suggested researching micromouse R&D for better action-over-data philosophy:
+
+1. **Move first, correct later** - Don't stop to analyze
+2. **Simple heuristics** - Wall follow, flood fill, not ML per frame
+3. **Commit to decisions** - Pick direction and go
+4. **Speed over caution** - Accept minor bumps for momentum
+
+**Application:** Consider flood-fill style navigation for Phase 4 (Loop Prevention) instead of ML-heavy approach.
+
+---
+
+## Testing Observations
+
+- **Pre-tuning:** Robot scanned every loop, felt "anxious"
+- **Post-tuning:** Robot drives decisively, scans only when stuck/circling
+- **Pre-launch scan:** Robot now surveys area before first move
+- **Still tends to circle left** - Phase 4 (VisitTracker) will address properly
+
+---
+
 ## Next Steps
 
-1. ~~**Implement centralized command dispatcher**~~ DONE
-
-2. **Test the new architecture**
-   - Restart Python vision service
-   - Restart Node MCP server
-   - Test commands through proxy
-
-3. **Test full autonomous driving loop**
-
-4. **Tune depth thresholds** with more real-world testing
-
-5. **Clean up duplicate code**
-   - Remove `RobotClient` from `autonomous_driver.py` (now uses `robot_client.py`)
-   - Ensure all Python code imports from centralized module
+1. ~~**Database migration**~~ DONE (Phase 0)
+2. ~~**Intelligent head scanning**~~ DONE (Phase 2)
+3. **Phase 4: Loop Prevention** - Micromouse-style dead reckoning + grid cells
+4. **Phase 3: Semantic Objects** - Make `look_for`/`avoid` nudges work
+5. **Phase 5: Enhanced Nudges** - `target_bearing`, `search_pattern`, `force_direction`
