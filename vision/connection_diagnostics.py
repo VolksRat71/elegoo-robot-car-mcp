@@ -75,13 +75,21 @@ class ConnectionMetrics:
 
 
 class DiagnosticClient:
-    """TCP client for connection diagnostics."""
+    """TCP client for connection diagnostics.
+
+    ESP32 firmware limitation: Can only handle ~4-5 messages per connection.
+    We proactively reconnect every 3 commands to get accurate metrics.
+    """
+
+    # ESP32 can handle ~4-5 commands per connection, reconnect at 3 to be safe
+    COMMANDS_PER_CONNECTION = 3
 
     def __init__(self, host: str = "192.168.4.1", port: int = 100):
         self.host = host
         self.port = port
         self.socket: Optional[socket.socket] = None
         self.metrics = ConnectionMetrics(start_time=time.time())
+        self.commands_since_connect = 0
 
     def connect(self) -> bool:
         """Establish TCP connection."""
@@ -91,6 +99,7 @@ class DiagnosticClient:
             self.socket.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
             self.socket.connect((self.host, self.port))
             print(f"[DIAG] Connected to {self.host}:{self.port}")
+            self.commands_since_connect = 0
             return True
         except Exception as e:
             print(f"[DIAG] Connection failed: {e}")
@@ -104,13 +113,20 @@ class DiagnosticClient:
             except:
                 pass
             self.socket = None
+        self.commands_since_connect = 0
 
     def reconnect(self) -> bool:
         """Attempt reconnection."""
         self.disconnect()
         self.metrics.reconnections += 1
-        print(f"[DIAG] Reconnecting (attempt #{self.metrics.reconnections})...")
         return self.connect()
+
+    def _ensure_fresh_connection(self) -> bool:
+        """Reconnect if we've sent too many commands on this connection."""
+        if self.commands_since_connect >= self.COMMANDS_PER_CONNECTION:
+            self.disconnect()
+            return self.connect()
+        return self.socket is not None
 
     def ping(self, timeout: float = 1.0) -> Optional[float]:
         """
@@ -118,7 +134,8 @@ class DiagnosticClient:
         Uses GROUND_CHECK (N=23) as a lightweight ping.
         Returns latency in ms, or None on failure.
         """
-        if not self.socket:
+        # Proactively reconnect to avoid ESP32 connection limit
+        if not self._ensure_fresh_connection():
             return None
 
         # Build command (ground check - lightweight status query)
@@ -130,6 +147,7 @@ class DiagnosticClient:
         try:
             self.socket.settimeout(timeout)
             self.socket.sendall(cmd.encode())
+            self.commands_since_connect += 1
 
             # Wait for response
             response = self.socket.recv(1024)

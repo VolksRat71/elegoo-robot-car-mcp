@@ -153,7 +153,14 @@ class DriverState:
 # === Robot Communication ===
 
 class RobotClient:
-    """Direct TCP communication with Elegoo robot."""
+    """Direct TCP communication with Elegoo robot.
+
+    ESP32 firmware limitation: Can only handle ~4-5 messages per connection
+    before it drops. We proactively reconnect every 3 commands to stay reliable.
+    """
+
+    # ESP32 can handle ~4-5 commands per connection, reconnect at 3 to be safe
+    COMMANDS_PER_CONNECTION = 3
 
     def __init__(self, host: str, port: int, metrics: Optional[ConnectionMetrics] = None):
         self.host = host
@@ -161,6 +168,7 @@ class RobotClient:
         self.socket: Optional[socket.socket] = None
         self.metrics = metrics
         self.reconnect_attempts = 0
+        self.commands_since_connect = 0
 
     def connect(self) -> bool:
         try:
@@ -171,6 +179,7 @@ class RobotClient:
             self.socket.connect((self.host, self.port))
             print(f"[ROBOT] Connected to {self.host}:{self.port}")
             self.reconnect_attempts = 0
+            self.commands_since_connect = 0
             return True
         except Exception as e:
             print(f"[ROBOT] Connection failed: {e}")
@@ -180,9 +189,14 @@ class RobotClient:
         """Attempt to reconnect after connection loss."""
         self.disconnect()
         self.reconnect_attempts += 1
-        print(f"[ROBOT] Reconnecting (attempt #{self.reconnect_attempts})...")
-        time.sleep(0.5)  # Brief pause before reconnect
         return self.connect()
+
+    def _ensure_fresh_connection(self) -> bool:
+        """Reconnect if we've sent too many commands on this connection."""
+        if self.commands_since_connect >= self.COMMANDS_PER_CONNECTION:
+            self.disconnect()
+            return self.connect()
+        return self.socket is not None
 
     def disconnect(self):
         if self.socket:
@@ -191,10 +205,16 @@ class RobotClient:
             except:
                 pass
             self.socket = None
+        self.commands_since_connect = 0
 
     def send_command(self, cmd: int, d1: int = 0, d2: int = 0, d3: int = 0) -> tuple[bool, float]:
-        """Send command and return (success, latency_ms)."""
-        if not self.socket:
+        """Send command and return (success, latency_ms).
+
+        Uses fire-and-forget mode - ESP32 doesn't reliably ACK commands,
+        but they still get through. We only wait briefly to clear buffer.
+        """
+        # Proactively reconnect to avoid ESP32 connection limit
+        if not self._ensure_fresh_connection():
             if self.metrics:
                 self.metrics.record(False, 0)
             return False, 0
@@ -203,13 +223,15 @@ class RobotClient:
         try:
             msg = json.dumps({"H": "1", "N": cmd, "D1": d1, "D2": d2, "D3": d3}) + "\n"
             self.socket.sendall(msg.encode())
-            # Read response (non-blocking, just clear buffer)
-            self.socket.settimeout(0.2)
+            self.commands_since_connect += 1
+
+            # Brief non-blocking read to clear any buffered data
+            # Don't wait for ACK - ESP32 doesn't reliably send them
+            self.socket.settimeout(0.05)
             try:
                 self.socket.recv(1024)
             except socket.timeout:
                 pass
-            self.socket.settimeout(2.0)
 
             latency_ms = (time.perf_counter() - start) * 1000
             if self.metrics:
@@ -221,6 +243,8 @@ class RobotClient:
             print(f"[ROBOT] Command failed: {e}")
             if self.metrics:
                 self.metrics.record(False, latency_ms)
+            # Force reconnect on next command
+            self.disconnect()
             return False, latency_ms
 
     def drive(self, direction: str, speed: int, duration_ms: int) -> bool:
