@@ -30,7 +30,7 @@ export interface WorldState {
   // Geometry (tactical)
   geometry: {
     front_min_mm: number;
-    scan_bins_mm: number[];           // e.g., 7 bins at 30 degree intervals
+    scan_bins_mm: number[]; // e.g., 7 bins at 30 degree intervals
     best_gap: {
       bearing_deg: number;
       width_mm: number;
@@ -44,7 +44,7 @@ export interface WorldState {
       bearing_deg: number;
       confidence: number;
     }[];
-    current_place_tags: string[];     // "hallway", "open_area", "cluttered"
+    current_place_tags: string[]; // "hallway", "open_area", "cluttered"
   };
 
   // Map summary (strategic)
@@ -60,9 +60,9 @@ export interface WorldState {
 
   // Confidence levels
   confidence: {
-    localization: number;             // 0-1
-    safety: number;                   // 0-1
-    loop_closure: number;             // 0-1
+    localization: number; // 0-1
+    safety: number; // 0-1
+    loop_closure: number; // 0-1
   };
 
   // Health & timing (for degraded-mode decisions)
@@ -72,7 +72,7 @@ export interface WorldState {
     dropped_frames: number;
     last_heartbeat_ms: number;
     battery_voltage: number;
-    queue_depth: number;              // pending commands
+    queue_depth: number; // pending commands
   };
 }
 
@@ -97,16 +97,18 @@ export async function buildWorldState(): Promise<WorldState> {
     frontMinMm = robot.getLastDistance() * 10;
   }
 
-  // Get connection status
-  const connectionStatus = robot.getConnectionStatus();
+  // Get connection status (reserved for future use)
+  const _connectionStatus = robot.getConnectionStatus();
   const statusResult = await robot.getStatus();
-  const statusData = statusResult.data as {
-    queueLength?: number;
-    connected?: boolean;
-  } | undefined;
+  const statusData = statusResult.data as
+    | {
+        queueLength?: number;
+        connected?: boolean;
+      }
+    | undefined;
 
-  // Get position from map store
-  const position = mapStore.getPosition();
+  // Get position from map store (reserved for future use)
+  const _position = mapStore.getPosition();
 
   // Build WorldState
   const worldState: WorldState = {
@@ -122,7 +124,7 @@ export async function buildWorldState(): Promise<WorldState> {
     geometry: {
       front_min_mm: frontMinMm,
       scan_bins_mm: [], // Empty until we have ToF scanning
-      best_gap: null,   // Cannot determine without scan bins
+      best_gap: null, // Cannot determine without scan bins
     },
 
     // Semantics - empty until vision integration
@@ -144,16 +146,16 @@ export async function buildWorldState(): Promise<WorldState> {
 
     // Confidence - conservative pre-laser values
     confidence: {
-      localization: 0.3,  // Dead reckoning only, low confidence
+      localization: 0.3, // Dead reckoning only, low confidence
       safety: frontMinMm > 200 ? 0.8 : frontMinMm > 100 ? 0.5 : 0.2,
-      loop_closure: 0,    // Not implemented pre-laser
+      loop_closure: 0, // Not implemented pre-laser
     },
 
     // Health
     health: {
-      link_rtt_ms: 0,     // Not measured yet
-      command_age_ms: 0,  // Not tracked yet
-      dropped_frames: 0,  // Not tracked yet
+      link_rtt_ms: 0, // Not measured yet
+      command_age_ms: 0, // Not tracked yet
+      dropped_frames: 0, // Not tracked yet
       last_heartbeat_ms: Date.now(),
       battery_voltage: 0, // Not read from robot yet
       queue_depth: statusData?.queueLength ?? 0,
@@ -185,7 +187,9 @@ export function formatWorldState(state: WorldState): string {
     lines.push(`  Scan Bins: [${state.geometry.scan_bins_mm.join(", ")}]`);
   }
   if (state.geometry.best_gap) {
-    lines.push(`  Best Gap: ${state.geometry.best_gap.bearing_deg}deg, ${state.geometry.best_gap.width_mm}mm wide`);
+    lines.push(
+      `  Best Gap: ${state.geometry.best_gap.bearing_deg}deg, ${state.geometry.best_gap.width_mm}mm wide`
+    );
   }
   lines.push("");
 

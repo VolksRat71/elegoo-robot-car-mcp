@@ -141,13 +141,7 @@ export class SessionLogger {
       INSERT INTO action_log (session_id, timestamp_ms, action, params, result)
       VALUES (?, ?, ?, ?, ?)
     `);
-    stmt.run(
-      sessionId,
-      Date.now(),
-      action,
-      JSON.stringify(params),
-      JSON.stringify(result)
-    );
+    stmt.run(sessionId, Date.now(), action, JSON.stringify(params), JSON.stringify(result));
   }
 
   /**
@@ -280,12 +274,8 @@ export class SessionLogger {
    * Delete a session and all its logs
    */
   deleteSession(sessionId: number): boolean {
-    const deleteWorldStates = this.db.prepare(
-      "DELETE FROM world_state_log WHERE session_id = ?"
-    );
-    const deleteActions = this.db.prepare(
-      "DELETE FROM action_log WHERE session_id = ?"
-    );
+    const deleteWorldStates = this.db.prepare("DELETE FROM world_state_log WHERE session_id = ?");
+    const deleteActions = this.db.prepare("DELETE FROM action_log WHERE session_id = ?");
     const deleteSession = this.db.prepare("DELETE FROM sessions WHERE id = ?");
 
     const transaction = this.db.transaction(() => {

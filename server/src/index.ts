@@ -222,11 +222,13 @@ async function main() {
   try {
     await robot.connect();
     console.error("Connected to robot!");
-  } catch (error) {
+  } catch {
     console.error(
       `Warning: Could not connect to robot at ${robotHost}:${robotPort}. Tools will attempt to reconnect when used.`
     );
-    console.error("Make sure you're connected to the ELEGOO WiFi network and the robot is powered on.");
+    console.error(
+      "Make sure you're connected to the ELEGOO WiFi network and the robot is powered on."
+    );
   }
 
   // Set up event handlers

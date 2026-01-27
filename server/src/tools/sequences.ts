@@ -46,27 +46,24 @@ const actionSchema = z.discriminatedUnion("action", [
 ]);
 
 export const executeSequenceSchema = z.object({
-  actions: z
-    .array(actionSchema)
-    .min(1)
-    .max(20)
-    .describe("List of actions to execute in order"),
+  actions: z.array(actionSchema).min(1).max(20).describe("List of actions to execute in order"),
   capture_at_end: z
     .boolean()
     .default(true)
     .describe("Capture an image after completing the sequence"),
-  stop_on_error: z
-    .boolean()
-    .default(true)
-    .describe("Stop executing if any action fails"),
+  stop_on_error: z.boolean().default(true).describe("Stop executing if any action fails"),
 });
 
 type Action = z.infer<typeof actionSchema>;
 type SequenceResult = {
-  content: Array<{ type: "text"; text: string } | { type: "image"; data: string; mimeType: string }>;
+  content: Array<
+    { type: "text"; text: string } | { type: "image"; data: string; mimeType: string }
+  >;
 };
 
-async function executeAction(action: Action): Promise<{ success: boolean; message: string; duration_ms: number }> {
+async function executeAction(
+  action: Action
+): Promise<{ success: boolean; message: string; duration_ms: number }> {
   const robot = getRobotClient();
   const mapStore = getMapStore();
 
@@ -81,8 +78,12 @@ async function executeAction(action: Action): Promise<{ success: boolean; messag
           mapStore.estimateMovement(action.direction, action.speed, action.duration_ms);
         }
         // Wait for drive to complete
-        await new Promise(resolve => setTimeout(resolve, action.duration_ms));
-        return { success: true, message: `Drove ${action.direction} for ${action.duration_ms}ms`, duration_ms: action.duration_ms };
+        await new Promise((resolve) => setTimeout(resolve, action.duration_ms));
+        return {
+          success: true,
+          message: `Drove ${action.direction} for ${action.duration_ms}ms`,
+          duration_ms: action.duration_ms,
+        };
       }
 
       case "turn": {
@@ -100,7 +101,7 @@ async function executeAction(action: Action): Promise<{ success: boolean; messag
           (currentPos.heading + action.degrees + 360) % 360
         );
         // Wait for turn to complete
-        await new Promise(resolve => setTimeout(resolve, duration));
+        await new Promise((resolve) => setTimeout(resolve, duration));
         return { success: true, message: `Turned ${action.degrees}°`, duration_ms: duration };
       }
 
@@ -110,7 +111,7 @@ async function executeAction(action: Action): Promise<{ success: boolean; messag
           return { success: false, message: `Look failed: ${response.error}`, duration_ms: 0 };
         }
         // Small wait for servo to move
-        await new Promise(resolve => setTimeout(resolve, 300));
+        await new Promise((resolve) => setTimeout(resolve, 300));
         return { success: true, message: `Camera at ${action.angle}°`, duration_ms: 300 };
       }
 
@@ -119,21 +120,33 @@ async function executeAction(action: Action): Promise<{ success: boolean; messag
       }
 
       case "wait": {
-        await new Promise(resolve => setTimeout(resolve, action.duration_ms));
-        return { success: true, message: `Waited ${action.duration_ms}ms`, duration_ms: action.duration_ms };
+        await new Promise((resolve) => setTimeout(resolve, action.duration_ms));
+        return {
+          success: true,
+          message: `Waited ${action.duration_ms}ms`,
+          duration_ms: action.duration_ms,
+        };
       }
 
       case "save_location": {
         mapStore.saveWaypoint(action.name);
         const pos = mapStore.getPosition();
-        return { success: true, message: `Saved "${action.name}" at (${pos.x.toFixed(1)}, ${pos.y.toFixed(1)})`, duration_ms: 0 };
+        return {
+          success: true,
+          message: `Saved "${action.name}" at (${pos.x.toFixed(1)}, ${pos.y.toFixed(1)})`,
+          duration_ms: 0,
+        };
       }
 
       default:
         return { success: false, message: "Unknown action type", duration_ms: 0 };
     }
   } catch (error) {
-    return { success: false, message: error instanceof Error ? error.message : "Unknown error", duration_ms: 0 };
+    return {
+      success: false,
+      message: error instanceof Error ? error.message : "Unknown error",
+      duration_ms: 0,
+    };
   }
 }
 
@@ -166,13 +179,15 @@ export async function executeSequence(
       hasMidSequenceCapture = true;
       try {
         const imgResult = await captureImage();
-        const imgContent = imgResult.content.find(c => c.type === "image");
+        const imgContent = imgResult.content.find((c) => c.type === "image");
         if (imgContent && imgContent.type === "image") {
           capturedImage = { data: imgContent.data, mimeType: imgContent.mimeType };
         }
         results.push(`[${stepNum}] ✓ Captured image`);
       } catch (error) {
-        results.push(`[${stepNum}] ✗ Capture failed: ${error instanceof Error ? error.message : "Unknown error"}`);
+        results.push(
+          `[${stepNum}] ✗ Capture failed: ${error instanceof Error ? error.message : "Unknown error"}`
+        );
         if (params.stop_on_error) {
           results.push("");
           results.push(`Sequence stopped at step ${stepNum} due to error.`);
@@ -205,13 +220,15 @@ export async function executeSequence(
     }
 
     // Small changeover delay between actions for stability
-    await new Promise(resolve => setTimeout(resolve, 150));
+    await new Promise((resolve) => setTimeout(resolve, 150));
   }
 
   // Final state
   const pos = mapStore.getPosition();
   results.push("");
-  results.push(`Final position: (${pos.x.toFixed(1)}, ${pos.y.toFixed(1)}) heading ${pos.heading.toFixed(1)}°`);
+  results.push(
+    `Final position: (${pos.x.toFixed(1)}, ${pos.y.toFixed(1)}) heading ${pos.heading.toFixed(1)}°`
+  );
 
   if (aborted) {
     results.push("(Sequence was aborted - position may be inaccurate)");
@@ -222,19 +239,19 @@ export async function executeSequence(
   if (params.capture_at_end && !hasMidSequenceCapture && !aborted) {
     try {
       const imgResult = await captureImage();
-      const imgContent = imgResult.content.find(c => c.type === "image");
+      const imgContent = imgResult.content.find((c) => c.type === "image");
       if (imgContent && imgContent.type === "image") {
         capturedImage = { data: imgContent.data, mimeType: imgContent.mimeType };
         results.push("Final image captured.");
       }
     } catch (error) {
-      results.push(`Final image capture failed: ${error instanceof Error ? error.message : "Unknown error"}`);
+      results.push(
+        `Final image capture failed: ${error instanceof Error ? error.message : "Unknown error"}`
+      );
     }
   }
 
-  const content: SequenceResult["content"] = [
-    { type: "text", text: results.join("\n") },
-  ];
+  const content: SequenceResult["content"] = [{ type: "text", text: results.join("\n") }];
 
   if (capturedImage) {
     content.push({

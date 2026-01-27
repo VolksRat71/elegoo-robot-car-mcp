@@ -3,9 +3,11 @@
   "entry": ["src/index.ts"],
   "project": ["src/**/*.ts"],
   "ignore": ["dist/**"],
-  "ignoreDependencies": [
-    "tsx",
-    "ts-node-dev",
-    "@types/*"
-  ]
+  "ignoreDependencies": ["@types/*"],
+  "ignoreExportsUsedInFile": true,
+  "rules": {
+    "unlisted": "warn",
+    "binaries": "warn",
+    "types": "warn"
+  }
 }

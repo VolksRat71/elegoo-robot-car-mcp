@@ -86,9 +86,9 @@ export class MapStore {
     `);
 
     // Load current position
-    const pos = this.db
-      .prepare("SELECT x, y, heading FROM position WHERE id = 1")
-      .get() as Position | undefined;
+    const pos = this.db.prepare("SELECT x, y, heading FROM position WHERE id = 1").get() as
+      | Position
+      | undefined;
     if (pos) {
       this.currentPosition = pos;
     }
@@ -259,12 +259,7 @@ export class MapStore {
   }
 
   // Occupancy grid methods
-  getOccupancyGrid(
-    minX: number,
-    maxX: number,
-    minY: number,
-    maxY: number
-  ): OccupancyCell[] {
+  getOccupancyGrid(minX: number, maxX: number, minY: number, maxY: number): OccupancyCell[] {
     const stmt = this.db.prepare(`
       SELECT x, y, occupied, confidence
       FROM occupancy_grid

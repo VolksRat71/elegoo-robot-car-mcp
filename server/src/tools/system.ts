@@ -64,9 +64,7 @@ export async function getStatus(): Promise<string> {
   return result;
 }
 
-export async function setMode(
-  params: z.infer<typeof setModeSchema>
-): Promise<string> {
+export async function setMode(params: z.infer<typeof setModeSchema>): Promise<string> {
   const robot = getRobotClient();
 
   try {

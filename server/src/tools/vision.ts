@@ -15,7 +15,9 @@ export const lookSchema = z.object({
 });
 
 export async function captureImage(): Promise<{
-  content: Array<{ type: "text"; text: string } | { type: "image"; data: string; mimeType: string }>;
+  content: Array<
+    { type: "text"; text: string } | { type: "image"; data: string; mimeType: string }
+  >;
 }> {
   try {
     // Try common Elegoo camera endpoints
@@ -101,8 +103,7 @@ export async function look(params: z.infer<typeof lookSchema>): Promise<string> 
       return `Failed to move camera: ${response.error || "Unknown error"}`;
     }
 
-    const direction =
-      params.angle < 60 ? "left" : params.angle > 120 ? "right" : "center";
+    const direction = params.angle < 60 ? "left" : params.angle > 120 ? "right" : "center";
     return `Camera servo moved to ${params.angle}° (facing ${direction}).`;
   } catch (error) {
     return `Error: ${error instanceof Error ? error.message : "Unknown error"}`;

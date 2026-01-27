@@ -3,24 +3,9 @@ import { getRobotClient } from "../robot-client.js";
 import { getMapStore } from "../map-store.js";
 
 export const scanSurroundingsSchema = z.object({
-  start_angle: z
-    .number()
-    .min(0)
-    .max(180)
-    .default(0)
-    .describe("Start angle for scan in degrees"),
-  end_angle: z
-    .number()
-    .min(0)
-    .max(180)
-    .default(180)
-    .describe("End angle for scan in degrees"),
-  step: z
-    .number()
-    .min(5)
-    .max(30)
-    .default(10)
-    .describe("Angle step between readings in degrees"),
+  start_angle: z.number().min(0).max(180).default(0).describe("Start angle for scan in degrees"),
+  end_angle: z.number().min(0).max(180).default(180).describe("End angle for scan in degrees"),
+  step: z.number().min(5).max(30).default(10).describe("Angle step between readings in degrees"),
 });
 
 export const saveWaypointSchema = z.object({
@@ -63,12 +48,8 @@ export async function scanSurroundings(
 
     // Build summary
     const pos = mapStore.getPosition();
-    const minReading = data.readings.reduce((min, r) =>
-      r.distance < min.distance ? r : min
-    );
-    const maxReading = data.readings.reduce((max, r) =>
-      r.distance > max.distance ? r : max
-    );
+    const minReading = data.readings.reduce((min, r) => (r.distance < min.distance ? r : min));
+    const maxReading = data.readings.reduce((max, r) => (r.distance > max.distance ? r : max));
 
     const obstacleCount = data.readings.filter((r) => r.distance < 50).length;
 
@@ -92,9 +73,7 @@ export async function scanSurroundings(
   }
 }
 
-export async function saveWaypoint(
-  params: z.infer<typeof saveWaypointSchema>
-): Promise<string> {
+export async function saveWaypoint(params: z.infer<typeof saveWaypointSchema>): Promise<string> {
   const mapStore = getMapStore();
 
   try {
@@ -105,9 +84,7 @@ export async function saveWaypoint(
   }
 }
 
-export async function navigateTo(
-  params: z.infer<typeof navigateToSchema>
-): Promise<string> {
+export async function navigateTo(params: z.infer<typeof navigateToSchema>): Promise<string> {
   const robot = getRobotClient();
   const mapStore = getMapStore();
 
@@ -136,12 +113,7 @@ export async function navigateTo(
     while (turnAngle < -180) turnAngle += 360;
 
     // Check if path is clear
-    const pathClear = mapStore.isPathClear(
-      currentPos.x,
-      currentPos.y,
-      waypoint.x,
-      waypoint.y
-    );
+    const pathClear = mapStore.isPathClear(currentPos.x, currentPos.y, waypoint.x, waypoint.y);
 
     if (!pathClear) {
       return `Cannot navigate to "${params.waypoint}": obstacles detected along the path. Consider scanning surroundings and finding an alternative route.`;

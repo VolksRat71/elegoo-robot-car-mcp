@@ -11,11 +11,7 @@
 import { z } from "zod";
 import { getRobotClient } from "../robot-client.js";
 import { getMapStore } from "../map-store.js";
-import {
-  buildWorldState,
-  formatWorldState,
-  type WorldState,
-} from "../autonomy/world-state.js";
+import { buildWorldState, formatWorldState } from "../autonomy/world-state.js";
 import { getAutonomyStateMachine } from "../autonomy/state-machine.js";
 import { getSessionLogger } from "../autonomy/logger.js";
 
@@ -30,9 +26,7 @@ export const observeSchema = z.object({
     .describe("Mode: 'quick' for geometry+health only, 'burst' for full state + camera"),
 });
 
-export async function observe(
-  params: z.infer<typeof observeSchema>
-): Promise<string> {
+export async function observe(params: z.infer<typeof observeSchema>): Promise<string> {
   const logger = getSessionLogger();
 
   try {
@@ -69,9 +63,7 @@ export const exploreSchema = z.object({
     .describe("Duration to explore in seconds (5-300)"),
 });
 
-export async function explore(
-  params: z.infer<typeof exploreSchema>
-): Promise<string> {
+export async function explore(params: z.infer<typeof exploreSchema>): Promise<string> {
   const robot = getRobotClient();
   const mapStore = getMapStore();
   const stateMachine = getAutonomyStateMachine();
@@ -88,11 +80,7 @@ export async function explore(
   let distanceTraveled = 0;
   let turnsExecuted = 0;
 
-  logger.logAction(
-    "explore",
-    { duration_s: params.duration_s },
-    { status: "started" }
-  );
+  logger.logAction("explore", { duration_s: params.duration_s }, { status: "started" });
 
   try {
     // Pre-laser exploration: simple random walk with obstacle avoidance

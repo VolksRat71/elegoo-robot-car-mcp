@@ -11,6 +11,12 @@
     "dev:stdio": "tsx watch src/index.ts",
     "dev:hot": "reloaderoo proxy --log-level info -- tsx src/index.ts",
     "typecheck": "tsc --noEmit",
+    "lint": "eslint src/",
+    "lint:fix": "eslint src/ --fix",
+    "format": "prettier --write src/",
+    "format:check": "prettier --check src/",
+    "knip": "knip",
+    "check": "npm run typecheck && npm run lint && npm run knip",
     "user:test": "npm run build && mcp-inspector node dist/index.js"
   },
   "keywords": [
@@ -24,17 +30,20 @@
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.0.0",
     "better-sqlite3": "^11.0.0",
-    "ws": "^8.16.0",
     "zod": "^3.22.4"
   },
   "devDependencies": {
+    "@eslint/js": "^9.0.0",
     "@modelcontextprotocol/inspector": "^0.15.0",
     "@types/better-sqlite3": "^7.6.9",
     "@types/node": "^20.11.0",
     "@types/ws": "^8.5.10",
+    "eslint": "^9.0.0",
+    "knip": "^5.0.0",
+    "prettier": "^3.2.0",
     "reloaderoo": "^1.0.0",
-    "ts-node-dev": "^2.0.0",
     "tsx": "^4.7.0",
-    "typescript": "^5.9.3"
+    "typescript": "^5.9.3",
+    "typescript-eslint": "^8.0.0"
   }
 }

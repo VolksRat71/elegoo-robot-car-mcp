@@ -6,12 +6,7 @@ export const driveSchema = z.object({
   direction: z
     .enum(["forward", "backward", "left", "right", "stop"])
     .describe("Direction to move the robot"),
-  speed: z
-    .number()
-    .min(0)
-    .max(100)
-    .default(50)
-    .describe("Speed as percentage (0-100)"),
+  speed: z.number().min(0).max(100).default(50).describe("Speed as percentage (0-100)"),
   duration_ms: z
     .number()
     .min(0)
@@ -24,12 +19,7 @@ export const safeDriveSchema = z.object({
   direction: z
     .enum(["forward", "backward", "left", "right", "stop"])
     .describe("Direction to move the robot"),
-  speed: z
-    .number()
-    .min(0)
-    .max(100)
-    .default(50)
-    .describe("Speed as percentage (0-100)"),
+  speed: z.number().min(0).max(100).default(50).describe("Speed as percentage (0-100)"),
   check_obstacles: z
     .boolean()
     .default(false)
@@ -42,26 +32,15 @@ export const turnSchema = z.object({
     .min(-180)
     .max(180)
     .describe("Degrees to turn. Positive = clockwise, negative = counter-clockwise."),
-  speed: z
-    .number()
-    .min(0)
-    .max(100)
-    .default(50)
-    .describe("Turn speed as percentage (0-100)"),
+  speed: z.number().min(0).max(100).default(50).describe("Turn speed as percentage (0-100)"),
 });
 
-export async function drive(
-  params: z.infer<typeof driveSchema>
-): Promise<string> {
+export async function drive(params: z.infer<typeof driveSchema>): Promise<string> {
   const robot = getRobotClient();
   const mapStore = getMapStore();
 
   try {
-    const response = await robot.drive(
-      params.direction,
-      params.speed,
-      params.duration_ms
-    );
+    const response = await robot.drive(params.direction, params.speed, params.duration_ms);
 
     if (!response.success) {
       return `Failed to drive: ${response.error || "Unknown error"}`;
@@ -84,17 +63,11 @@ export async function drive(
   }
 }
 
-export async function safeDrive(
-  params: z.infer<typeof safeDriveSchema>
-): Promise<string> {
+export async function safeDrive(params: z.infer<typeof safeDriveSchema>): Promise<string> {
   const robot = getRobotClient();
 
   try {
-    const response = await robot.safeDrive(
-      params.direction,
-      params.speed,
-      params.check_obstacles
-    );
+    const response = await robot.safeDrive(params.direction, params.speed, params.check_obstacles);
 
     if (!response.success) {
       const data = response.data as { blocked?: boolean };

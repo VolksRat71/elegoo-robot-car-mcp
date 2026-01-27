@@ -53,8 +53,8 @@ const DIR = {
   STOP: 8,
 };
 
-// Motor direction values for N=1 (MOTOR_CONTROL)
-const MOTOR_DIR = {
+// Motor direction values for N=1 (MOTOR_CONTROL) - reserved for future fine-grained control
+const _MOTOR_DIR = {
   STOP: 0,
   FORWARD: 1,
   BACKWARD: 2,
@@ -196,12 +196,12 @@ export class StockRobotClient extends EventEmitter {
 
       try {
         await command.execute();
-      } catch (error) {
+      } catch {
         // Error already handled in execute wrapper
       }
 
       // Small delay between commands for robot stability
-      await new Promise(resolve => setTimeout(resolve, 50));
+      await new Promise((resolve) => setTimeout(resolve, 50));
     }
 
     this.isProcessingQueue = false;
@@ -409,7 +409,7 @@ export class StockRobotClient extends EventEmitter {
     await this.connect();
 
     // Wait a moment for connection to establish
-    await new Promise(resolve => setTimeout(resolve, 300));
+    await new Promise((resolve) => setTimeout(resolve, 300));
 
     if (!this.status.connected) {
       throw new Error("Not connected to robot - make sure you're on ELEGOO WiFi");
@@ -456,7 +456,14 @@ export class StockRobotClient extends EventEmitter {
     this.sendCommandRaw(n, d1, d2, d3, d4);
   }
 
-  private async sendCommandAndWait(n: number, d1?: number, d2?: number, d3?: number, d4?: number, timeout: number = 1000): Promise<string> {
+  private async sendCommandAndWait(
+    n: number,
+    d1?: number,
+    d2?: number,
+    d3?: number,
+    d4?: number,
+    timeout: number = 1000
+  ): Promise<string> {
     return new Promise((resolve, reject) => {
       const timer = setTimeout(() => {
         this.pendingResponse = null;
@@ -508,11 +515,11 @@ export class StockRobotClient extends EventEmitter {
           this.sendCommandRaw(CMD.MOTOR_CONTROL, 0, mappedSpeed, MOTOR_DIR.backward);
         } else if (direction === "left") {
           // Right motor forward, left motor backward (spin left)
-          this.sendCommandRaw(CMD.MOTOR_CONTROL, 1, mappedSpeed, MOTOR_DIR.forward);  // Right forward
+          this.sendCommandRaw(CMD.MOTOR_CONTROL, 1, mappedSpeed, MOTOR_DIR.forward); // Right forward
           this.sendCommandRaw(CMD.MOTOR_CONTROL, 2, mappedSpeed, MOTOR_DIR.backward); // Left backward
         } else if (direction === "right") {
           // Left motor forward, right motor backward (spin right)
-          this.sendCommandRaw(CMD.MOTOR_CONTROL, 2, mappedSpeed, MOTOR_DIR.forward);  // Left forward
+          this.sendCommandRaw(CMD.MOTOR_CONTROL, 2, mappedSpeed, MOTOR_DIR.forward); // Left forward
           this.sendCommandRaw(CMD.MOTOR_CONTROL, 1, mappedSpeed, MOTOR_DIR.backward); // Right backward
         } else {
           // Stop all motors
@@ -521,11 +528,15 @@ export class StockRobotClient extends EventEmitter {
 
         // If duration specified, wait then stop (within the queued command)
         if (duration && direction !== "stop") {
-          await new Promise(resolve => setTimeout(resolve, duration));
+          await new Promise((resolve) => setTimeout(resolve, duration));
           this.sendCommandRaw(CMD.MOTOR_CONTROL, 0, 0, MOTOR_DIR.stop);
         }
 
-        return { success: true, cmd: "drive", data: { direction, speed, mappedSpeed } } as RobotResponse;
+        return {
+          success: true,
+          cmd: "drive",
+          data: { direction, speed, mappedSpeed },
+        } as RobotResponse;
       } catch (error) {
         return {
           success: false,
@@ -553,7 +564,7 @@ export class StockRobotClient extends EventEmitter {
           success: false,
           cmd: "safe_drive",
           error: "Obstacle detected ahead! Stopped for safety.",
-          data: { obstacleDetected: true, blocked: true }
+          data: { obstacleDetected: true, blocked: true },
         };
       }
     }
@@ -580,10 +591,14 @@ export class StockRobotClient extends EventEmitter {
         this.sendCommandRaw(CMD.CAR_DIRECTION, direction, mappedSpeed);
 
         // Wait for turn duration then stop (within queued command)
-        await new Promise(resolve => setTimeout(resolve, duration));
+        await new Promise((resolve) => setTimeout(resolve, duration));
         this.sendCommandRaw(CMD.CAR_DIRECTION, DIR.STOP, 0);
 
-        return { success: true, cmd: "turn", data: { degrees, speed, mappedSpeed } } as RobotResponse;
+        return {
+          success: true,
+          cmd: "turn",
+          data: { degrees, speed, mappedSpeed },
+        } as RobotResponse;
       } catch (error) {
         return {
           success: false,
@@ -648,10 +663,17 @@ export class StockRobotClient extends EventEmitter {
     return this.queueCommand(async () => {
       try {
         // Try D1=2 first (numeric distance in cm) - supported by SmartCarModified firmware
-        let response = await this.sendCommandAndWait(CMD.ULTRASONIC, 2, undefined, undefined, undefined, 500);
+        let response = await this.sendCommandAndWait(
+          CMD.ULTRASONIC,
+          2,
+          undefined,
+          undefined,
+          undefined,
+          500
+        );
 
         // Parse numeric response - format is {1:XX} or {1_XX} where XX is distance in cm
-        let distanceMatch = response.match(/\{1[_:](\d+)\}/);
+        const distanceMatch = response.match(/\{1[_:](\d+)\}/);
         if (distanceMatch) {
           let distance = parseInt(distanceMatch[1], 10);
 
@@ -672,16 +694,23 @@ export class StockRobotClient extends EventEmitter {
             data: {
               distance: distance,
               obstacleDetected: distance > 0 && distance < 20,
-              note: distance === 0 ? "Out of range" :
-                    distance < 20 ? "Obstacle close" : "Path clear"
-            }
+              note:
+                distance === 0 ? "Out of range" : distance < 20 ? "Obstacle close" : "Path clear",
+            },
           } as RobotResponse;
         }
 
         // Fallback to D1=1 (boolean mode) - works on stock firmware
         if (response === "timeout") {
           console.error("D1=2 timed out, falling back to D1=1 (boolean mode)");
-          response = await this.sendCommandAndWait(CMD.ULTRASONIC, 1, undefined, undefined, undefined, 500);
+          response = await this.sendCommandAndWait(
+            CMD.ULTRASONIC,
+            1,
+            undefined,
+            undefined,
+            undefined,
+            500
+          );
 
           const hasObstacle = response.includes("true");
           const estimatedDistance = hasObstacle ? 15 : 100;
@@ -693,9 +722,11 @@ export class StockRobotClient extends EventEmitter {
             data: {
               distance: estimatedDistance,
               obstacleDetected: hasObstacle,
-              note: hasObstacle ? "Obstacle detected (estimated 15cm)" : "Path clear (estimated 100cm)",
-              mode: "boolean_fallback"
-            }
+              note: hasObstacle
+                ? "Obstacle detected (estimated 15cm)"
+                : "Path clear (estimated 100cm)",
+              mode: "boolean_fallback",
+            },
           } as RobotResponse;
         }
 
@@ -706,8 +737,8 @@ export class StockRobotClient extends EventEmitter {
           data: {
             distance: this.lastDistance,
             obstacleDetected: false,
-            note: `Unexpected response format: ${response}`
-          }
+            note: `Unexpected response format: ${response}`,
+          },
         } as RobotResponse;
       } catch (error) {
         return {
@@ -747,7 +778,7 @@ export class StockRobotClient extends EventEmitter {
         return {
           success: true,
           cmd: "get_line_sensors",
-          data: { note: "Response arrives asynchronously - listen for 'message' event" }
+          data: { note: "Response arrives asynchronously - listen for 'message' event" },
         } as RobotResponse;
       } catch (error) {
         return {
@@ -787,11 +818,7 @@ export class StockRobotClient extends EventEmitter {
     };
   }
 
-  async scanSurroundings(
-    startAngle = 0,
-    endAngle = 180,
-    step = 10
-  ): Promise<RobotResponse> {
+  async scanSurroundings(startAngle = 0, endAngle = 180, step = 10): Promise<RobotResponse> {
     await this.ensureConnected();
 
     // Queue the entire scan operation as atomic
@@ -808,18 +835,18 @@ export class StockRobotClient extends EventEmitter {
               success: false,
               cmd: "scan",
               error: "Connection lost during scan",
-              data: { partialReadings: readings }
+              data: { partialReadings: readings },
             } as RobotResponse;
           }
 
           // Pan to angle
           this.sendCommandRaw(CMD.SERVO, 1, angle);
           // Wait for servo to move
-          await new Promise(resolve => setTimeout(resolve, 200));
+          await new Promise((resolve) => setTimeout(resolve, 200));
           // Request distance reading (async response)
           this.sendCommandRaw(CMD.ULTRASONIC, 1);
           readings.push({ angle });
-          await new Promise(resolve => setTimeout(resolve, 100));
+          await new Promise((resolve) => setTimeout(resolve, 100));
         }
 
         // Return to center
@@ -830,7 +857,7 @@ export class StockRobotClient extends EventEmitter {
           cmd: "scan",
           data: {
             readings,
-            note: "Distance values arrive asynchronously - check 'message' events"
+            note: "Distance values arrive asynchronously - check 'message' events",
           },
         } as RobotResponse;
       } catch (error) {
@@ -885,8 +912,11 @@ export class StockRobotClient extends EventEmitter {
           cmd: "set_mode",
           data: {
             mode,
-            note: mode === "manual" ? "Entered standby mode" : "Autonomous modes not fully supported with stock firmware"
-          }
+            note:
+              mode === "manual"
+                ? "Entered standby mode"
+                : "Autonomous modes not fully supported with stock firmware",
+          },
         } as RobotResponse;
       } catch (error) {
         return {
