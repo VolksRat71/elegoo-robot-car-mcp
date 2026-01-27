@@ -4,6 +4,23 @@
 
 ---
 
+## Turn Command Goes Forward Instead of Rotating
+
+**Status**: Bug (2026-01-27)
+
+The `turn` tool moves the robot forward instead of rotating in place.
+
+**Expected**: Robot rotates clockwise/counter-clockwise without translating
+**Actual**: Robot drives forward
+
+**Files**:
+- `server/src/robot-client-stock.ts` → `turn()` method
+- Uses `CMD.CAR_DIRECTION` with `DIR.LEFT`/`DIR.RIGHT`
+
+**Notes**: The `drive` command with `direction: "left"` or `"right"` might work differently. Needs investigation of stock Elegoo protocol for in-place rotation vs. arc turning.
+
+---
+
 ## HC-SR04 Ultrasonic Sensor Unreliable
 
 **Status**: Hardware limitation - VL53L1X ToF sensor ordered
@@ -66,6 +83,33 @@ Line tracking command (N=22) returns data asynchronously. Current code doesn't p
 The ESP32-S3 board's USB-C port doesn't expose data lines. Cannot flash custom firmware via USB.
 
 **Workaround**: Use USB-to-TTL adapter on TX/RX pins (not yet attempted).
+
+---
+
+---
+
+## Test Results (2026-01-27)
+
+All 16 MCP tools tested via Claude Code:
+
+| Tool | Status | Notes |
+|------|--------|-------|
+| `get_status` | ✅ Pass | Connection, mode, position |
+| `get_position` | ✅ Pass | Quick position check |
+| `reset_position` | ✅ Pass | Reset to origin |
+| `get_distance` | ✅ Pass | 100cm reading (fallback mode) |
+| `capture_image` | ✅ Pass | JPEG returned, LLM can see it |
+| `look` | ✅ Pass | Pan 45°, 90°, 135° |
+| `drive` | ✅ Pass | Forward/backward with duration |
+| `turn` | ⚠️ Bug | Goes forward instead of rotating |
+| `save_waypoint` | ✅ Pass | Saved waypoint |
+| `list_waypoints` | ✅ Pass | Listed waypoints |
+| `delete_waypoint` | ✅ Pass | Deleted waypoint |
+| `clear_map` | ✅ Pass | Reset map data |
+| `execute_sequence` | ✅ Pass | Turn + drive + capture |
+| `explore` | ✅ Pass | 5s autonomous, 24cm traveled |
+| `stop` | ✅ Pass | Halted, state → IDLE |
+| `observe` | ✅ Pass | Full WorldState returned |
 
 ---
 
