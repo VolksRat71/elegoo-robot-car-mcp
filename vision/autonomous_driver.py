@@ -116,13 +116,9 @@ class Config:
     snapshots_path: str = "drive_snapshots"
     snapshots_max: int = 50
 
-    # Proactive head scanning (look around while exploring)
+    # Intelligent head scanning (scan when decision is uncertain)
     head_scan_enabled: bool = True
-    head_scan_interval_s: float = 4.0
-    head_scan_angles: List[int] = field(default_factory=lambda: [60, 90, 120])
     head_scan_settle_ms: int = 150
-    head_scan_glance_on_turn: bool = True
-    head_scan_glance_duration_ms: int = 300
 
     def hot_reload(self) -> bool:
         """Reload config from JSON if file changed. Returns True if reloaded."""
@@ -218,14 +214,10 @@ class Config:
         config.snapshots_path = snapshots.get("save_path", config.snapshots_path)
         config.snapshots_max = snapshots.get("max_snapshots", config.snapshots_max)
 
-        # Load proactive head scan settings
+        # Load intelligent head scan settings
         head_scan = data.get("head_scan", {})
         config.head_scan_enabled = head_scan.get("enabled", config.head_scan_enabled)
-        config.head_scan_interval_s = head_scan.get("periodic_interval_s", config.head_scan_interval_s)
-        config.head_scan_angles = head_scan.get("quick_scan_angles", config.head_scan_angles)
         config.head_scan_settle_ms = head_scan.get("settle_time_ms", config.head_scan_settle_ms)
-        config.head_scan_glance_on_turn = head_scan.get("glance_on_turn", config.head_scan_glance_on_turn)
-        config.head_scan_glance_duration_ms = head_scan.get("glance_duration_ms", config.head_scan_glance_duration_ms)
 
         # Store mode for hot-reload
         config._mode = mode
@@ -337,49 +329,91 @@ def head_swing_scan(robot: "RobotClient", config: Config, depth_estimator, visio
 
 class HeadScanScheduler:
     """
-    Manages proactive head scanning - periodic scans and glances while exploring.
-    Unlike head_swing_scan (reactive), this runs proactively during normal navigation.
+    Intelligent head scanning - only scans when truly needed.
+    Biased toward driving over data gathering.
     """
+
+    # Quick scan for minor uncertainty (3 angles, ~450ms)
+    QUICK_SCAN_ANGLES = [45, 90, 135]
+    # Full scan when stuck/circling (5 angles, ~750ms)
+    FULL_SCAN_ANGLES = [30, 60, 90, 120, 150]
 
     def __init__(self, robot: "RobotClient", config: Config, depth_estimator, vision_service_url: str):
         self.robot = robot
         self.config = config
         self.depth_estimator = depth_estimator
         self.vision_service_url = vision_service_url
+        self.current_servo_angle = 90
+        self.recent_turns: List[str] = []  # Track recent turn directions
+        self.max_turn_history = 5
         self.last_scan_time = 0.0
-        self.current_servo_angle = 90  # Track servo position
+        self.scan_cooldown_s = 3.0  # Minimum time between scans
 
-    def should_periodic_scan(self, state: DriverState, decision: Decision) -> bool:
-        """Check if we should do a periodic scan (every N seconds while moving forward)."""
+    def needs_more_data(self, depth: DepthZones, state: DriverState) -> str:
+        """
+        Check if we need to scan. Returns scan type or empty string.
+        Biased toward driving - only scan when truly uncertain.
+        """
         if not self.config.head_scan_enabled:
-            return False
+            return ""
 
-        # Only scan while moving forward
-        if decision not in (Decision.FORWARD, Decision.FORWARD_SLOW):
-            return False
+        # Cooldown - don't scan too frequently
+        if time.time() - self.last_scan_time < self.scan_cooldown_s:
+            return ""
 
-        # Check time since last scan
-        elapsed = time.time() - state.last_head_scan_time
-        return elapsed >= self.config.head_scan_interval_s
+        # 1. Repeated same-direction turns (circling) -> FULL scan
+        if len(self.recent_turns) >= 4:
+            last_4 = self.recent_turns[-4:]
+            if all(t == last_4[0] for t in last_4):
+                return "full:circling"
 
-    def quick_scan(self, state: DriverState) -> Optional[dict]:
+        # 2. Very ambiguous direction (within 5%) -> QUICK scan
+        # Only when we'd actually need to turn (center has some obstacle)
+        if abs(depth.left - depth.right) < 5 and depth.center > 30:
+            return "quick:ambiguous"
+
+        # 3. All zones high and similar (stuck at wall) -> FULL scan
+        values = [depth.left, depth.center, depth.right]
+        if min(values) > 35 and max(values) - min(values) < 8:
+            return "full:wall"
+
+        # Default: just drive, don't overthink
+        return ""
+
+    def record_turn(self, direction: str):
+        """Track turn history for circle detection."""
+        self.recent_turns.append(direction)
+        if len(self.recent_turns) > self.max_turn_history:
+            self.recent_turns.pop(0)
+
+    def decision_scan(self, state: DriverState, reason: str) -> tuple:
         """
-        Fast 3-point scan (~450ms total) to survey surroundings.
-        Returns dict with depth readings at each angle, or None on failure.
-        """
-        if not self.config.head_scan_enabled or self.robot is None:
-            return None
+        Scan to gather more data. Uses quick (3 angles) or full (5 angles) based on reason.
 
-        print("[SCAN] Quick scan...")
+        Returns: (scan_results dict, center_frame, center_depth_zones)
+        The center frame/depth can be used by main loop to avoid double-processing.
+        """
+        if self.robot is None:
+            return None, None, None
+
+        # Choose scan type based on reason prefix
+        if reason.startswith("full:"):
+            angles = self.FULL_SCAN_ANGLES
+            scan_type = "full"
+        else:
+            angles = self.QUICK_SCAN_ANGLES
+            scan_type = "quick"
+
+        print(f"[SCAN] {scan_type} scan ({reason.split(':')[-1]})...")
         results = {}
+        center_frame = None
+        center_depth_zones = None
 
-        for angle in self.config.head_scan_angles:
-            # Move servo
+        for angle in angles:
             self.robot.look(angle)
             self.current_servo_angle = angle
             time.sleep(self.config.head_scan_settle_ms / 1000.0)
 
-            # Capture and analyze
             frame = capture_frame(self.vision_service_url)
             if frame is None:
                 continue
@@ -387,13 +421,22 @@ class HeadScanScheduler:
             pil_frame = Image.fromarray(frame)
             depth_result = self.depth_estimator.estimate(pil_frame)
             center_depth = depth_result["depth_zones"]["center"] * 100
-
             results[angle] = center_depth
+
+            # Keep the center (90°) frame for main loop to use
+            if angle == 90:
+                center_frame = frame
+                center_depth_zones = DepthZones(
+                    left=depth_result["depth_zones"]["left"] * 100,
+                    center=depth_result["depth_zones"]["center"] * 100,
+                    right=depth_result["depth_zones"]["right"] * 100,
+                )
 
         # Return to center
         self.robot.look(90)
         self.current_servo_angle = 90
 
+        self.last_scan_time = time.time()
         state.last_head_scan_time = time.time()
         state.head_scan_count += 1
 
@@ -401,61 +444,65 @@ class HeadScanScheduler:
             angles_str = " ".join([f"{a}°:{d:.0f}%" for a, d in sorted(results.items())])
             print(f"[SCAN] Results: {angles_str}")
 
-        return results if results else None
+        return results, center_frame, center_depth_zones
 
-    def glance(self, direction: str, state: DriverState) -> Optional[float]:
+    def get_best_direction_from_scan(self, scan_results: dict, bias_against: str = None) -> Optional[str]:
         """
-        Quick look left or right before/during a turn.
-        Returns depth reading in that direction, or None on failure.
+        Determine best direction from scan results.
+        Can bias against a direction (e.g., if we've been turning left repeatedly).
         """
-        if not self.config.head_scan_enabled or not self.config.head_scan_glance_on_turn:
-            return None
-
-        if self.robot is None:
-            return None
-
-        angle = 60 if direction == "left" else 120
-        print(f"[GLANCE] Looking {direction}...")
-
-        self.robot.look(angle)
-        self.current_servo_angle = angle
-        time.sleep(self.config.head_scan_glance_duration_ms / 1000.0)
-
-        # Capture and analyze
-        frame = capture_frame(self.vision_service_url)
-        depth = None
-
-        if frame is not None:
-            pil_frame = Image.fromarray(frame)
-            depth_result = self.depth_estimator.estimate(pil_frame)
-            depth = depth_result["depth_zones"]["center"] * 100
-            print(f"[GLANCE] {direction}: {depth:.0f}%")
-
-        # Return to center
-        self.robot.look(90)
-        self.current_servo_angle = 90
-
-        state.glance_count += 1
-        return depth
-
-    def get_best_direction_from_scan(self, scan_results: dict) -> Optional[str]:
-        """Determine best direction from scan results."""
         if not scan_results:
             return None
 
-        # Find clearest angle
+        # Find clearest angle (lowest depth %)
         best_angle = min(scan_results, key=scan_results.get)
         best_depth = scan_results[best_angle]
 
-        # Only suggest turn if there's a significantly clearer path
+        # If biasing against a direction, penalize that side
+        if bias_against:
+            penalty = 15  # Add 15% penalty to discouraged side
+            adjusted = {}
+            for angle, depth in scan_results.items():
+                if bias_against == "left" and angle < 90:
+                    adjusted[angle] = depth + penalty
+                elif bias_against == "right" and angle > 90:
+                    adjusted[angle] = depth + penalty
+                else:
+                    adjusted[angle] = depth
+            best_angle = min(adjusted, key=adjusted.get)
+            best_depth = scan_results[best_angle]
+            print(f"[SCAN] Biasing against {bias_against}, adjusted best: {best_angle}°")
+
+        # Determine direction
         center_depth = scan_results.get(90, 100)
-        if best_depth < center_depth - 10:  # At least 10% clearer
+
+        # Need significant improvement to suggest turn
+        if best_depth < center_depth - 8:
             if best_angle < 90:
                 return "left"
             elif best_angle > 90:
                 return "right"
 
-        return None  # Center is fine or best
+        # Center is fine
+        return None
+
+    def get_circle_bias(self) -> Optional[str]:
+        """If we've been circling, return direction to bias against."""
+        if len(self.recent_turns) < 3:
+            return None
+
+        left_count = self.recent_turns.count("left")
+        right_count = self.recent_turns.count("right")
+
+        # If 80%+ turns in one direction, bias against it
+        total = left_count + right_count
+        if total > 0:
+            if left_count / total >= 0.8:
+                return "left"
+            if right_count / total >= 0.8:
+                return "right"
+
+        return None
 
 
 # === Snapshot Capture ===
@@ -664,11 +711,9 @@ def run_driver(duration_s: int, config: Config, dry_run: bool = False):
         if not robot.connect():
             print("[ERROR] Could not connect to robot")
             return
-        # Initialize proactive head scanner
+        # Initialize intelligent head scanner
         head_scanner = HeadScanScheduler(robot, config, depth_estimator, config.vision_service_url)
-        print(f"[DRIVER] Proactive head scanning: {'enabled' if config.head_scan_enabled else 'disabled'}")
-        if config.head_scan_enabled:
-            print(f"[DRIVER] Scan interval: {config.head_scan_interval_s}s, glance on turn: {config.head_scan_glance_on_turn}")
+        print(f"[DRIVER] Intelligent head scanning: {'enabled' if config.head_scan_enabled else 'disabled'}")
 
     # Signal handler for clean shutdown
     def signal_handler(sig, frame):
@@ -680,6 +725,20 @@ def run_driver(duration_s: int, config: Config, dry_run: bool = False):
     end_time = time.time() + duration_s
     print(f"[DRIVER] Starting for {duration_s}s...")
 
+    # Pre-launch scan - look around before first move
+    if head_scanner and not dry_run:
+        print("[DRIVER] Pre-launch scan...")
+        scan_results, _, _ = head_scanner.decision_scan(state, "full:prelaunch")
+        if scan_results:
+            best_dir = head_scanner.get_best_direction_from_scan(scan_results)
+            if best_dir:
+                print(f"[DRIVER] Best initial direction: {best_dir}")
+                # Execute initial turn toward clearest path
+                if best_dir == "left":
+                    robot.turn(-config.turn_degrees_small, config.turn_speed)
+                else:
+                    robot.turn(config.turn_degrees_small, config.turn_speed)
+
     try:
         while state.running and time.time() < end_time:
             loop_start = time.time()
@@ -687,68 +746,84 @@ def run_driver(duration_s: int, config: Config, dry_run: bool = False):
             # Hot-reload config if file changed (tune without restart!)
             config.hot_reload()
 
-            # Capture frame from vision service
-            frame = capture_frame(config.vision_service_url)
+            frame = None
+            current_depth = None
+            scan_direction_override = None  # If scan finds better path
+
+            # === Intelligent Head Scanning ===
+            # Check if we need more data BEFORE capturing a frame
+            # If we scan, we get the center frame for free - no double processing
+            if head_scanner and not dry_run and state.smoothed_depth:
+                scan_reason = head_scanner.needs_more_data(state.smoothed_depth, state)
+
+                if scan_reason:
+                    # Do a wide decision scan - returns center frame too
+                    scan_results, scan_frame, scan_depth = head_scanner.decision_scan(state, scan_reason)
+
+                    if scan_results and scan_frame is not None:
+                        # Use the center frame from scan - no extra capture needed!
+                        frame = scan_frame
+                        current_depth = scan_depth
+
+                        # Check if we should bias against a direction (circle prevention)
+                        circle_bias = head_scanner.get_circle_bias()
+                        if circle_bias:
+                            print(f"[SCAN] Detected circling {circle_bias}, biasing against")
+
+                        scan_direction_override = head_scanner.get_best_direction_from_scan(
+                            scan_results, bias_against=circle_bias
+                        )
+
+                        if scan_direction_override:
+                            print(f"[SCAN] Best path: {scan_direction_override}")
+
+            # Only capture a new frame if we didn't just do a scan
             if frame is None:
-                state.vision_failures += 1
-                if state.vision_failures > config.max_vision_failures:
-                    print("[DRIVER] Too many vision failures, stopping")
-                    break
-                time.sleep(config.loop_interval_ms / 1000.0)
-                continue
+                frame = capture_frame(config.vision_service_url)
+                if frame is None:
+                    state.vision_failures += 1
+                    if state.vision_failures > config.max_vision_failures:
+                        print("[DRIVER] Too many vision failures, stopping")
+                        break
+                    time.sleep(config.loop_interval_ms / 1000.0)
+                    continue
 
             state.vision_failures = 0
 
-            # Get depth - convert numpy array to PIL Image
-            pil_frame = Image.fromarray(frame)
-            depth_result = depth_estimator.estimate(pil_frame)
-            zones = depth_result["depth_zones"]
-            current_depth = DepthZones(
-                left=zones["left"] * 100,
-                center=zones["center"] * 100,
-                right=zones["right"] * 100,
-            )
+            # Only process depth if we didn't get it from scan
+            if current_depth is None:
+                pil_frame = Image.fromarray(frame)
+                depth_result = depth_estimator.estimate(pil_frame)
+                zones = depth_result["depth_zones"]
+                current_depth = DepthZones(
+                    left=zones["left"] * 100,
+                    center=zones["center"] * 100,
+                    right=zones["right"] * 100,
+                )
 
             # Smooth
             state.smoothed_depth = smooth_depth(current_depth, state.smoothed_depth, config.ema_alpha)
 
-            # Decide
+            # Decide based on depth
             decision = make_decision(state.smoothed_depth, state, config)
 
             # Apply Claude's nudges (copilot mode)
             nudges = load_nudges()
             decision = apply_nudge_bias(decision, state.smoothed_depth, nudges)
 
-            # === Proactive Head Scanning ===
-            # Look around periodically while moving forward
+            # Override with scan result if scan found a better path
+            if scan_direction_override:
+                if scan_direction_override == "left":
+                    decision = Decision.TURN_LEFT
+                else:
+                    decision = Decision.TURN_RIGHT
+
+            # Track turns for circle detection
             if head_scanner and not dry_run:
-                # Periodic scan every N seconds while moving forward
-                if head_scanner.should_periodic_scan(state, decision):
-                    scan_results = head_scanner.quick_scan(state)
-                    if scan_results:
-                        better_direction = head_scanner.get_best_direction_from_scan(scan_results)
-                        if better_direction:
-                            print(f"[SCAN] Better path found: {better_direction}")
-                            # Suggest a turn if significantly better path found
-                            if better_direction == "left" and decision == Decision.FORWARD:
-                                decision = Decision.TURN_LEFT
-                            elif better_direction == "right" and decision == Decision.FORWARD:
-                                decision = Decision.TURN_RIGHT
-
-                # Glance in direction of turn (validates the turn decision)
-                if config.head_scan_glance_on_turn and decision in (Decision.TURN_LEFT, Decision.TURN_LEFT_LARGE):
-                    glance_depth = head_scanner.glance("left", state)
-                    if glance_depth and glance_depth > config.obstacle_threshold:
-                        # Left is actually blocked, try right instead
-                        print(f"[GLANCE] Left blocked ({glance_depth:.0f}%), switching to right")
-                        decision = Decision.TURN_RIGHT if decision == Decision.TURN_LEFT else Decision.TURN_RIGHT_LARGE
-
-                elif config.head_scan_glance_on_turn and decision in (Decision.TURN_RIGHT, Decision.TURN_RIGHT_LARGE):
-                    glance_depth = head_scanner.glance("right", state)
-                    if glance_depth and glance_depth > config.obstacle_threshold:
-                        # Right is actually blocked, try left instead
-                        print(f"[GLANCE] Right blocked ({glance_depth:.0f}%), switching to left")
-                        decision = Decision.TURN_LEFT if decision == Decision.TURN_RIGHT else Decision.TURN_LEFT_LARGE
+                if decision in (Decision.TURN_LEFT, Decision.TURN_LEFT_LARGE):
+                    head_scanner.record_turn("left")
+                elif decision in (Decision.TURN_RIGHT, Decision.TURN_RIGHT_LARGE):
+                    head_scanner.record_turn("right")
 
             # Check if we should do head swing to find better path (reactive - stuck/wall)
             do_head_swing = False

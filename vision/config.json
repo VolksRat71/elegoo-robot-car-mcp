@@ -14,11 +14,9 @@
 
   "head_scan": {
     "enabled": true,
-    "periodic_interval_s": 4.0,
-    "quick_scan_angles": [60, 90, 120],
     "settle_time_ms": 150,
-    "glance_on_turn": true,
-    "glance_duration_ms": 300
+    "ambiguity_threshold": 10,
+    "circle_detection_window": 5
   },
 
   "snapshots": {
