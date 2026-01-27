@@ -116,6 +116,14 @@ class Config:
     snapshots_path: str = "drive_snapshots"
     snapshots_max: int = 50
 
+    # Proactive head scanning (look around while exploring)
+    head_scan_enabled: bool = True
+    head_scan_interval_s: float = 4.0
+    head_scan_angles: List[int] = field(default_factory=lambda: [60, 90, 120])
+    head_scan_settle_ms: int = 150
+    head_scan_glance_on_turn: bool = True
+    head_scan_glance_duration_ms: int = 300
+
     def hot_reload(self) -> bool:
         """Reload config from JSON if file changed. Returns True if reloaded."""
         try:
@@ -210,6 +218,15 @@ class Config:
         config.snapshots_path = snapshots.get("save_path", config.snapshots_path)
         config.snapshots_max = snapshots.get("max_snapshots", config.snapshots_max)
 
+        # Load proactive head scan settings
+        head_scan = data.get("head_scan", {})
+        config.head_scan_enabled = head_scan.get("enabled", config.head_scan_enabled)
+        config.head_scan_interval_s = head_scan.get("periodic_interval_s", config.head_scan_interval_s)
+        config.head_scan_angles = head_scan.get("quick_scan_angles", config.head_scan_angles)
+        config.head_scan_settle_ms = head_scan.get("settle_time_ms", config.head_scan_settle_ms)
+        config.head_scan_glance_on_turn = head_scan.get("glance_on_turn", config.head_scan_glance_on_turn)
+        config.head_scan_glance_duration_ms = head_scan.get("glance_duration_ms", config.head_scan_glance_duration_ms)
+
         # Store mode for hot-reload
         config._mode = mode
         config._last_reload = CONFIG_PATH.stat().st_mtime if CONFIG_PATH.exists() else 0
@@ -249,6 +266,9 @@ class DriverState:
     snapshot_count: int = 0
     head_swing_count: int = 0
     last_command_time: float = 0.0  # For timed command refresh
+    last_head_scan_time: float = 0.0  # Proactive head scanning
+    head_scan_count: int = 0
+    glance_count: int = 0
 
 
 # === Camera Capture ===
@@ -311,6 +331,131 @@ def head_swing_scan(robot: "RobotClient", config: Config, depth_estimator, visio
     best_angle, best_depth = min(results, key=lambda x: x[1])
     print(f"[HEAD] Best path: {best_angle}° ({best_depth:.1f}%)")
     return best_angle
+
+
+# === Proactive Head Scanning ===
+
+class HeadScanScheduler:
+    """
+    Manages proactive head scanning - periodic scans and glances while exploring.
+    Unlike head_swing_scan (reactive), this runs proactively during normal navigation.
+    """
+
+    def __init__(self, robot: "RobotClient", config: Config, depth_estimator, vision_service_url: str):
+        self.robot = robot
+        self.config = config
+        self.depth_estimator = depth_estimator
+        self.vision_service_url = vision_service_url
+        self.last_scan_time = 0.0
+        self.current_servo_angle = 90  # Track servo position
+
+    def should_periodic_scan(self, state: DriverState, decision: Decision) -> bool:
+        """Check if we should do a periodic scan (every N seconds while moving forward)."""
+        if not self.config.head_scan_enabled:
+            return False
+
+        # Only scan while moving forward
+        if decision not in (Decision.FORWARD, Decision.FORWARD_SLOW):
+            return False
+
+        # Check time since last scan
+        elapsed = time.time() - state.last_head_scan_time
+        return elapsed >= self.config.head_scan_interval_s
+
+    def quick_scan(self, state: DriverState) -> Optional[dict]:
+        """
+        Fast 3-point scan (~450ms total) to survey surroundings.
+        Returns dict with depth readings at each angle, or None on failure.
+        """
+        if not self.config.head_scan_enabled or self.robot is None:
+            return None
+
+        print("[SCAN] Quick scan...")
+        results = {}
+
+        for angle in self.config.head_scan_angles:
+            # Move servo
+            self.robot.look(angle)
+            self.current_servo_angle = angle
+            time.sleep(self.config.head_scan_settle_ms / 1000.0)
+
+            # Capture and analyze
+            frame = capture_frame(self.vision_service_url)
+            if frame is None:
+                continue
+
+            pil_frame = Image.fromarray(frame)
+            depth_result = self.depth_estimator.estimate(pil_frame)
+            center_depth = depth_result["depth_zones"]["center"] * 100
+
+            results[angle] = center_depth
+
+        # Return to center
+        self.robot.look(90)
+        self.current_servo_angle = 90
+
+        state.last_head_scan_time = time.time()
+        state.head_scan_count += 1
+
+        if results:
+            angles_str = " ".join([f"{a}°:{d:.0f}%" for a, d in sorted(results.items())])
+            print(f"[SCAN] Results: {angles_str}")
+
+        return results if results else None
+
+    def glance(self, direction: str, state: DriverState) -> Optional[float]:
+        """
+        Quick look left or right before/during a turn.
+        Returns depth reading in that direction, or None on failure.
+        """
+        if not self.config.head_scan_enabled or not self.config.head_scan_glance_on_turn:
+            return None
+
+        if self.robot is None:
+            return None
+
+        angle = 60 if direction == "left" else 120
+        print(f"[GLANCE] Looking {direction}...")
+
+        self.robot.look(angle)
+        self.current_servo_angle = angle
+        time.sleep(self.config.head_scan_glance_duration_ms / 1000.0)
+
+        # Capture and analyze
+        frame = capture_frame(self.vision_service_url)
+        depth = None
+
+        if frame is not None:
+            pil_frame = Image.fromarray(frame)
+            depth_result = self.depth_estimator.estimate(pil_frame)
+            depth = depth_result["depth_zones"]["center"] * 100
+            print(f"[GLANCE] {direction}: {depth:.0f}%")
+
+        # Return to center
+        self.robot.look(90)
+        self.current_servo_angle = 90
+
+        state.glance_count += 1
+        return depth
+
+    def get_best_direction_from_scan(self, scan_results: dict) -> Optional[str]:
+        """Determine best direction from scan results."""
+        if not scan_results:
+            return None
+
+        # Find clearest angle
+        best_angle = min(scan_results, key=scan_results.get)
+        best_depth = scan_results[best_angle]
+
+        # Only suggest turn if there's a significantly clearer path
+        center_depth = scan_results.get(90, 100)
+        if best_depth < center_depth - 10:  # At least 10% clearer
+            if best_angle < 90:
+                return "left"
+            elif best_angle > 90:
+                return "right"
+
+        return None  # Center is fine or best
 
 
 # === Snapshot Capture ===
@@ -513,11 +658,17 @@ def run_driver(duration_s: int, config: Config, dry_run: bool = False):
     )
 
     robot: Optional[RobotClient] = None
+    head_scanner: Optional[HeadScanScheduler] = None
     if not dry_run:
         robot = RobotClient(config.robot_host, config.robot_port)
         if not robot.connect():
             print("[ERROR] Could not connect to robot")
             return
+        # Initialize proactive head scanner
+        head_scanner = HeadScanScheduler(robot, config, depth_estimator, config.vision_service_url)
+        print(f"[DRIVER] Proactive head scanning: {'enabled' if config.head_scan_enabled else 'disabled'}")
+        if config.head_scan_enabled:
+            print(f"[DRIVER] Scan interval: {config.head_scan_interval_s}s, glance on turn: {config.head_scan_glance_on_turn}")
 
     # Signal handler for clean shutdown
     def signal_handler(sig, frame):
@@ -568,7 +719,38 @@ def run_driver(duration_s: int, config: Config, dry_run: bool = False):
             nudges = load_nudges()
             decision = apply_nudge_bias(decision, state.smoothed_depth, nudges)
 
-            # Check if we should do head swing to find better path
+            # === Proactive Head Scanning ===
+            # Look around periodically while moving forward
+            if head_scanner and not dry_run:
+                # Periodic scan every N seconds while moving forward
+                if head_scanner.should_periodic_scan(state, decision):
+                    scan_results = head_scanner.quick_scan(state)
+                    if scan_results:
+                        better_direction = head_scanner.get_best_direction_from_scan(scan_results)
+                        if better_direction:
+                            print(f"[SCAN] Better path found: {better_direction}")
+                            # Suggest a turn if significantly better path found
+                            if better_direction == "left" and decision == Decision.FORWARD:
+                                decision = Decision.TURN_LEFT
+                            elif better_direction == "right" and decision == Decision.FORWARD:
+                                decision = Decision.TURN_RIGHT
+
+                # Glance in direction of turn (validates the turn decision)
+                if config.head_scan_glance_on_turn and decision in (Decision.TURN_LEFT, Decision.TURN_LEFT_LARGE):
+                    glance_depth = head_scanner.glance("left", state)
+                    if glance_depth and glance_depth > config.obstacle_threshold:
+                        # Left is actually blocked, try right instead
+                        print(f"[GLANCE] Left blocked ({glance_depth:.0f}%), switching to right")
+                        decision = Decision.TURN_RIGHT if decision == Decision.TURN_LEFT else Decision.TURN_RIGHT_LARGE
+
+                elif config.head_scan_glance_on_turn and decision in (Decision.TURN_RIGHT, Decision.TURN_RIGHT_LARGE):
+                    glance_depth = head_scanner.glance("right", state)
+                    if glance_depth and glance_depth > config.obstacle_threshold:
+                        # Right is actually blocked, try left instead
+                        print(f"[GLANCE] Right blocked ({glance_depth:.0f}%), switching to left")
+                        decision = Decision.TURN_LEFT if decision == Decision.TURN_RIGHT else Decision.TURN_LEFT_LARGE
+
+            # Check if we should do head swing to find better path (reactive - stuck/wall)
             do_head_swing = False
             if not dry_run and robot:
                 # Head swing on wall detection
@@ -666,9 +848,13 @@ def run_driver(duration_s: int, config: Config, dry_run: bool = False):
         print(f"  Duration:       {elapsed:.1f}s")
         print(f"  Forward moves:  {state.forward_count}")
         print(f"  Turns:          {state.turn_count}")
-        print(f"  Head swings:    {state.head_swing_count}")
         print(f"  Snapshots:      {state.snapshot_count}")
         print(f"  Vision fails:   {state.vision_failures}")
+
+        print(f"\nHead Movement:")
+        print(f"  Periodic scans: {state.head_scan_count}")
+        print(f"  Turn glances:   {state.glance_count}")
+        print(f"  Reactive swings:{state.head_swing_count}")
 
         if not dry_run and robot and robot.metrics.commands_sent > 0:
             metrics = robot.metrics
