@@ -60,7 +60,7 @@
   },
 
   "smoothing": {
-    "ema_alpha": 0.4
+    "ema_alpha": 0.3
   },
 
   "safety": {

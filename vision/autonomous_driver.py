@@ -505,6 +505,145 @@ class HeadScanScheduler:
         return None
 
 
+# === Visit Tracking (Loop Prevention) ===
+
+class VisitTracker:
+    """
+    Micromouse-inspired position tracking and loop prevention.
+    Uses dead reckoning + grid cells to know where we've been.
+    """
+
+    CELL_SIZE_CM = 30  # Grid cell size (robot is ~15cm wide)
+    FORWARD_DISTANCE_CM = 8  # Estimated distance per forward command
+
+    def __init__(self):
+        self.x = 0.0  # Position in cm
+        self.y = 0.0
+        self.heading = 0.0  # Degrees, 0 = forward at start
+        self.visited: dict = {}  # {(cell_x, cell_y): visit_count}
+        self.total_distance = 0.0
+
+    def _get_cell(self) -> tuple:
+        """Get current grid cell coordinates."""
+        cx = int(self.x / self.CELL_SIZE_CM)
+        cy = int(self.y / self.CELL_SIZE_CM)
+        return (cx, cy)
+
+    def update(self, decision: "Decision", config: "Config"):
+        """Update position estimate based on executed decision."""
+        import math
+
+        if decision in (Decision.FORWARD, Decision.FORWARD_SLOW):
+            # Move forward in current heading direction
+            distance = self.FORWARD_DISTANCE_CM
+            rad = math.radians(self.heading)
+            self.x += distance * math.sin(rad)
+            self.y += distance * math.cos(rad)
+            self.total_distance += distance
+
+        elif decision == Decision.REVERSE:
+            # Move backward
+            distance = self.FORWARD_DISTANCE_CM * 0.6
+            rad = math.radians(self.heading)
+            self.x -= distance * math.sin(rad)
+            self.y -= distance * math.cos(rad)
+
+        elif decision == Decision.TURN_LEFT:
+            self.heading = (self.heading - config.turn_degrees_small) % 360
+
+        elif decision == Decision.TURN_RIGHT:
+            self.heading = (self.heading + config.turn_degrees_small) % 360
+
+        elif decision == Decision.TURN_LEFT_LARGE:
+            self.heading = (self.heading - config.turn_degrees_large) % 360
+
+        elif decision == Decision.TURN_RIGHT_LARGE:
+            self.heading = (self.heading + config.turn_degrees_large) % 360
+
+        # Record visit to current cell
+        cell = self._get_cell()
+        self.visited[cell] = self.visited.get(cell, 0) + 1
+
+    def get_visit_count(self) -> int:
+        """Get visit count for current cell."""
+        return self.visited.get(self._get_cell(), 0)
+
+    def get_exploration_score(self, direction: str) -> float:
+        """
+        Get exploration score for a direction (lower = less explored = better).
+        Projects where we'd end up if we went that direction.
+        """
+        import math
+
+        # Project position if we went that direction
+        if direction == "forward":
+            test_heading = self.heading
+        elif direction == "left":
+            test_heading = (self.heading - 30) % 360
+        elif direction == "right":
+            test_heading = (self.heading + 30) % 360
+        else:
+            return 0.0
+
+        # Where would we be after moving?
+        rad = math.radians(test_heading)
+        test_x = self.x + self.FORWARD_DISTANCE_CM * 2 * math.sin(rad)
+        test_y = self.y + self.FORWARD_DISTANCE_CM * 2 * math.cos(rad)
+
+        test_cell = (int(test_x / self.CELL_SIZE_CM), int(test_y / self.CELL_SIZE_CM))
+        return self.visited.get(test_cell, 0)
+
+    def suggest_direction(self, depth: "DepthZones", config: "Config") -> Optional[str]:
+        """
+        Suggest a direction based on exploration (prefer unexplored areas).
+        Only suggests if there's a meaningful difference and path is clear.
+        """
+        left_score = self.get_exploration_score("left")
+        right_score = self.get_exploration_score("right")
+        forward_score = self.get_exploration_score("forward")
+
+        # Only suggest if one direction is significantly less explored
+        min_score = min(left_score, right_score, forward_score)
+        scores = {"left": left_score, "right": right_score, "forward": forward_score}
+
+        # Find directions that are least explored (within 1 visit of minimum)
+        best_dirs = [d for d, s in scores.items() if s <= min_score + 1]
+
+        # Filter by what's actually clear
+        clear_dirs = []
+        for d in best_dirs:
+            if d == "forward" and depth.center < config.obstacle_threshold:
+                clear_dirs.append(d)
+            elif d == "left" and depth.left < config.obstacle_threshold:
+                clear_dirs.append(d)
+            elif d == "right" and depth.right < config.obstacle_threshold:
+                clear_dirs.append(d)
+
+        if not clear_dirs:
+            return None
+
+        # Prefer forward if it's among the best
+        if "forward" in clear_dirs:
+            return None  # Let normal logic handle forward
+
+        # Otherwise suggest least explored clear direction
+        return clear_dirs[0] if clear_dirs else None
+
+    def is_stuck_in_area(self, threshold: int = 5) -> bool:
+        """Check if we've visited current cell too many times."""
+        return self.get_visit_count() >= threshold
+
+    def get_stats(self) -> dict:
+        """Get tracking statistics."""
+        return {
+            "position": (round(self.x, 1), round(self.y, 1)),
+            "heading": round(self.heading, 1),
+            "cells_visited": len(self.visited),
+            "total_distance_cm": round(self.total_distance, 1),
+            "current_cell_visits": self.get_visit_count(),
+        }
+
+
 # === Snapshot Capture ===
 
 def save_snapshot(frame: np.ndarray, state: DriverState, config: Config, depth: DepthZones, decision: str):
@@ -706,6 +845,8 @@ def run_driver(duration_s: int, config: Config, dry_run: bool = False):
 
     robot: Optional[RobotClient] = None
     head_scanner: Optional[HeadScanScheduler] = None
+    visit_tracker = VisitTracker()  # Always track, even in dry-run
+
     if not dry_run:
         robot = RobotClient(config.robot_host, config.robot_port)
         if not robot.connect():
@@ -825,6 +966,33 @@ def run_driver(duration_s: int, config: Config, dry_run: bool = False):
                 elif decision in (Decision.TURN_RIGHT, Decision.TURN_RIGHT_LARGE):
                     head_scanner.record_turn("right")
 
+            # === Visit Tracking (Loop Prevention) ===
+            # Always bias toward unexplored areas when making turn decisions
+            if decision in (Decision.TURN_LEFT, Decision.TURN_RIGHT):
+                # Check if the opposite direction is significantly less explored
+                left_score = visit_tracker.get_exploration_score("left")
+                right_score = visit_tracker.get_exploration_score("right")
+
+                # Switch direction if other side is much less explored AND clear
+                if decision == Decision.TURN_LEFT and right_score < left_score - 2:
+                    if state.smoothed_depth.right < config.obstacle_threshold:
+                        print(f"[EXPLORE] Right less explored ({right_score} vs {left_score}), switching")
+                        decision = Decision.TURN_RIGHT
+                elif decision == Decision.TURN_RIGHT and left_score < right_score - 2:
+                    if state.smoothed_depth.left < config.obstacle_threshold:
+                        print(f"[EXPLORE] Left less explored ({left_score} vs {right_score}), switching")
+                        decision = Decision.TURN_LEFT
+
+            # Force exploration when stuck in same cell too long
+            if visit_tracker.is_stuck_in_area(threshold=5):
+                explore_dir = visit_tracker.suggest_direction(state.smoothed_depth, config)
+                if explore_dir and explore_dir != "forward":
+                    print(f"[EXPLORE] Stuck ({visit_tracker.get_visit_count()} visits), forcing {explore_dir}")
+                    if explore_dir == "left":
+                        decision = Decision.TURN_LEFT_LARGE
+                    else:
+                        decision = Decision.TURN_RIGHT_LARGE
+
             # Check if we should do head swing to find better path (reactive - stuck/wall)
             do_head_swing = False
             if not dry_run and robot:
@@ -900,6 +1068,9 @@ def run_driver(duration_s: int, config: Config, dry_run: bool = False):
 
             state.last_decision = decision
 
+            # Update position estimate for loop prevention
+            visit_tracker.update(decision, config)
+
             # Maintain loop timing
             elapsed = time.time() - loop_start
             sleep_time = (config.loop_interval_ms / 1000.0) - elapsed
@@ -930,6 +1101,14 @@ def run_driver(duration_s: int, config: Config, dry_run: bool = False):
         print(f"  Periodic scans: {state.head_scan_count}")
         print(f"  Turn glances:   {state.glance_count}")
         print(f"  Reactive swings:{state.head_swing_count}")
+
+        # Visit tracking stats
+        vt_stats = visit_tracker.get_stats()
+        print(f"\nExploration:")
+        print(f"  Est. position:  ({vt_stats['position'][0]}, {vt_stats['position'][1]}) cm")
+        print(f"  Est. heading:   {vt_stats['heading']}°")
+        print(f"  Cells visited:  {vt_stats['cells_visited']}")
+        print(f"  Total distance: {vt_stats['total_distance_cm']} cm")
 
         if not dry_run and robot and robot.metrics.commands_sent > 0:
             metrics = robot.metrics

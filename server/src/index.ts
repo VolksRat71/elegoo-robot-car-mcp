@@ -351,6 +351,14 @@ async function main() {
     res.end("Not found");
   });
 
+  dashboardServer.on("error", (err: NodeJS.ErrnoException) => {
+    if (err.code === "EADDRINUSE") {
+      console.error(`[Dashboard] Port ${dashboardPort} in use - dashboard disabled (MCP still works)`);
+    } else {
+      console.error(`[Dashboard] Error: ${err.message}`);
+    }
+  });
+
   dashboardServer.listen(dashboardPort, () => {
     console.error(`Dashboard UI: http://localhost:${dashboardPort}/`);
   });
