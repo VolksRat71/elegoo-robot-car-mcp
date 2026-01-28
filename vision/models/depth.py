@@ -1,9 +1,36 @@
 """MiDaS depth estimation wrapper."""
 import base64
 import io
+import os
 import torch
 import numpy as np
 from PIL import Image
+
+
+# Resource configuration via environment variables
+# VISION_THREADS: Number of CPU threads for PyTorch (default: 2)
+# VISION_DEVICE: Force device - "cpu", "cuda", "mps", or "auto" (default: auto)
+VISION_THREADS = int(os.environ.get("VISION_THREADS", "2"))
+VISION_DEVICE = os.environ.get("VISION_DEVICE", "auto")
+
+# Limit PyTorch threads to prevent CPU hogging
+torch.set_num_threads(VISION_THREADS)
+torch.set_num_interop_threads(VISION_THREADS)
+
+
+def get_best_device() -> torch.device:
+    """Select best available device based on config and availability."""
+    if VISION_DEVICE != "auto":
+        # User forced a specific device
+        return torch.device(VISION_DEVICE)
+
+    # Auto-detect best device
+    if torch.cuda.is_available():
+        return torch.device("cuda")
+    elif hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
+        return torch.device("mps")  # Mac GPU
+    else:
+        return torch.device("cpu")
 
 
 class DepthEstimator:
@@ -14,9 +41,15 @@ class DepthEstimator:
         Args:
             model_type: One of "DPT_Large", "DPT_Hybrid", "MiDaS_small"
                        Use "MiDaS_small" for faster inference on robot
+
+        Environment variables:
+            VISION_THREADS: CPU threads for PyTorch (default: 2)
+            VISION_DEVICE: "cpu", "cuda", "mps", or "auto" (default: auto)
         """
-        self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        self.device = get_best_device()
         self.model_type = model_type
+
+        print(f"[Depth] Using device: {self.device} with {VISION_THREADS} threads")
 
         # Load MiDaS model from torch hub
         self.model = torch.hub.load("intel-isl/MiDaS", model_type)

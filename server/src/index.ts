@@ -17,6 +17,7 @@ import { fileURLToPath } from "url";
 import { getRobotClient } from "./robot-client.js";
 import { getMapStore } from "./map-store.js";
 import { getVisionServiceManager } from "./vision-service-manager.js";
+import { getDashboardManager } from "./dashboard-manager.js";
 import { handleDashboardApi } from "./dashboard-api.js";
 
 // Get directory of this file for resolving static assets
@@ -228,6 +229,8 @@ async function main() {
   // Start vision service (Python sidecar) - NON-BLOCKING
   // Don't wait for models to load, let MCP server start immediately
   const visionManager = getVisionServiceManager();
+  const dashboardManager = getDashboardManager();
+
   if (autoStartVision) {
     console.error("Starting vision service (non-blocking)...");
     // Start async - don't await. Vision will become available when models load.
@@ -242,10 +245,21 @@ async function main() {
     });
   }
 
+  // Start dashboard (Vite dev server) - NON-BLOCKING
+  console.error("Starting dashboard (non-blocking)...");
+  dashboardManager.start().then((started) => {
+    if (started) {
+      console.error(`Dashboard ready at ${dashboardManager.getUrl()}`);
+    }
+  }).catch((err) => {
+    console.error(`Dashboard error: ${err}`);
+  });
+
   // Set up graceful shutdown
   const shutdown = () => {
     console.error("Shutting down...");
     visionManager.stop();
+    dashboardManager.stop();
     process.exit(0);
   };
   process.on("SIGINT", shutdown);

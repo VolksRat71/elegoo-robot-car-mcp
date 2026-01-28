@@ -299,8 +299,10 @@ async def lifespan(app: FastAPI):
     # Warmup inference to prime JIT compilation
     warmup_models(depth_estimator, object_detector)
 
-    # Start background vision processor (10 fps depth, detection on demand)
-    vision_fps = float(os.environ.get("VISION_FPS", "10"))
+    # Start background vision processor
+    # Default 5 fps - enough for navigation, easy on CPU
+    # Set VISION_FPS env var to adjust
+    vision_fps = float(os.environ.get("VISION_FPS", "5"))
     vision_processor = VisionProcessor(
         camera=camera,
         depth_model=depth_estimator,
