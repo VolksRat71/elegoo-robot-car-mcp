@@ -552,67 +552,129 @@ class CameraStream:
         }
 
     def _stream_loop(self):
-        """Background loop that reads frames from MJPEG stream."""
+        """Background loop that reads frames from MJPEG stream or polls capture endpoint."""
         import cv2
 
+        # Extract host from stream URL for fallback capture URL
+        # http://192.168.4.1:81/stream -> http://192.168.4.1:80/capture
+        try:
+            from urllib.parse import urlparse
+            parsed = urlparse(self.url)
+            self.capture_url = f"http://{parsed.hostname}:80/capture"
+        except:
+            self.capture_url = "http://192.168.4.1:80/capture"
+
+        use_polling = False
+        stream_failures = 0
+
         while self.running:
-            try:
-                # Use tuple timeout: (connect_timeout, read_timeout)
-                # This ensures we don't hang forever on stalled streams
-                response = requests.get(self.url, timeout=(5.0, 10.0), stream=True)
-                if response.status_code != 200:
-                    print(f"[CAMERA] Stream returned {response.status_code}")
-                    self.error_count += 1
-                    time.sleep(1.0)
-                    continue
+            # Switch to polling mode after 3 stream failures
+            if stream_failures >= 3 and not use_polling:
+                print(f"[CAMERA] Stream failed {stream_failures}x, switching to polling mode")
+                use_polling = True
 
-                # Read MJPEG stream
-                buffer = b""
-                last_chunk_time = time.time()
-                for chunk in response.iter_content(chunk_size=4096):
-                    # Check for stalled stream (no data for 10 seconds)
-                    if time.time() - last_chunk_time > 10.0:
-                        print("[CAMERA] Stream stalled, reconnecting...")
-                        break
-                    last_chunk_time = time.time()
-                    if not self.running:
-                        break
+            if use_polling:
+                self._poll_capture(cv2)
+            else:
+                if not self._read_stream(cv2):
+                    stream_failures += 1
+                else:
+                    stream_failures = 0  # Reset on success
 
-                    buffer += chunk
-
-                    # Look for JPEG frame boundaries
-                    start = buffer.find(b'\xff\xd8')  # JPEG start
-                    end = buffer.find(b'\xff\xd9')    # JPEG end
-
-                    if start != -1 and end != -1 and end > start:
-                        # Extract complete JPEG frame
-                        jpg_data = buffer[start:end + 2]
-                        buffer = buffer[end + 2:]
-
-                        # Decode JPEG to numpy array
-                        frame = cv2.imdecode(
-                            np.frombuffer(jpg_data, dtype=np.uint8),
-                            cv2.IMREAD_COLOR
-                        )
-
-                        if frame is not None:
-                            now = time.time()
-                            # Rate limiting: only store frame if enough time has passed
-                            if now - self.last_stored_time >= self.min_frame_interval:
-                                with self.lock:
-                                    self.latest_frame = frame
-                                    self.frame_time = now
-                                self.frame_count += 1
-                                self.last_stored_time = now
-
-            except requests.exceptions.Timeout:
-                print(f"[CAMERA] Stream timeout, reconnecting...")
+    def _poll_capture(self, cv2):
+        """Poll the /capture endpoint for single frames."""
+        try:
+            response = requests.get(self.capture_url, timeout=2.0)
+            if response.status_code == 200:
+                # Decode JPEG
+                frame = cv2.imdecode(
+                    np.frombuffer(response.content, dtype=np.uint8),
+                    cv2.IMREAD_COLOR
+                )
+                if frame is not None:
+                    now = time.time()
+                    if now - self.last_stored_time >= self.min_frame_interval:
+                        with self.lock:
+                            self.latest_frame = frame
+                            self.frame_time = now
+                        self.frame_count += 1
+                        self.last_stored_time = now
+            else:
                 self.error_count += 1
-                time.sleep(0.5)
-            except Exception as e:
-                print(f"[CAMERA] Stream error: {e}")
+
+            # Sleep to maintain target FPS
+            time.sleep(self.min_frame_interval)
+
+        except Exception as e:
+            print(f"[CAMERA] Capture error: {e}")
+            self.error_count += 1
+            time.sleep(0.5)
+
+    def _read_stream(self, cv2) -> bool:
+        """Try to read from MJPEG stream. Returns True if got frames, False on failure."""
+        try:
+            # Use tuple timeout: (connect_timeout, read_timeout)
+            response = requests.get(self.url, timeout=(5.0, 10.0), stream=True)
+            if response.status_code != 200:
+                print(f"[CAMERA] Stream returned {response.status_code}")
                 self.error_count += 1
                 time.sleep(1.0)
+                return False
+
+            # Read MJPEG stream
+            buffer = b""
+            last_chunk_time = time.time()
+            got_frames = False
+
+            for chunk in response.iter_content(chunk_size=4096):
+                # Check for stalled stream (no data for 10 seconds)
+                if time.time() - last_chunk_time > 10.0:
+                    print("[CAMERA] Stream stalled, reconnecting...")
+                    break
+                last_chunk_time = time.time()
+                if not self.running:
+                    break
+
+                buffer += chunk
+
+                # Look for JPEG frame boundaries
+                start = buffer.find(b'\xff\xd8')  # JPEG start
+                end = buffer.find(b'\xff\xd9')    # JPEG end
+
+                if start != -1 and end != -1 and end > start:
+                    # Extract complete JPEG frame
+                    jpg_data = buffer[start:end + 2]
+                    buffer = buffer[end + 2:]
+
+                    # Decode JPEG to numpy array
+                    frame = cv2.imdecode(
+                        np.frombuffer(jpg_data, dtype=np.uint8),
+                        cv2.IMREAD_COLOR
+                    )
+
+                    if frame is not None:
+                        got_frames = True
+                        now = time.time()
+                        # Rate limiting: only store frame if enough time has passed
+                        if now - self.last_stored_time >= self.min_frame_interval:
+                            with self.lock:
+                                self.latest_frame = frame
+                                self.frame_time = now
+                            self.frame_count += 1
+                            self.last_stored_time = now
+
+            return got_frames
+
+        except requests.exceptions.Timeout:
+            print(f"[CAMERA] Stream timeout, reconnecting...")
+            self.error_count += 1
+            time.sleep(0.5)
+            return False
+        except Exception as e:
+            print(f"[CAMERA] Stream error: {e}")
+            self.error_count += 1
+            time.sleep(1.0)
+            return False
 
 
 # === Convenience functions ===

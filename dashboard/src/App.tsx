@@ -129,11 +129,13 @@ function App() {
             copilotActive={copilotActive}
             decisions={decisions}
             onDecisionsClear={handleDecisionsClear}
+            className={copilotActive ? 'flex-1 min-h-0' : ''}
           />
           <Telemetry
             worldState={snapshot?.world_state}
             lastUpdate={lastUpdate ?? undefined}
             detections={snapshot?.detection?.detected_objects ?? []}
+            compact={copilotActive}
           />
         </div>
       </div>

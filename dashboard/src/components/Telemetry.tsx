@@ -4,23 +4,25 @@ interface TelemetryProps {
   worldState?: WorldState;
   lastUpdate?: number;
   detections: DetectedObject[];
+  compact?: boolean;
 }
 
 export function Telemetry({
   worldState,
   lastUpdate,
   detections,
+  compact = false,
 }: TelemetryProps) {
   const state = worldState?.autonomy_state || 'OFFLINE';
   const safetyPercent = (worldState?.confidence.safety || 0) * 100;
   const frontDistance = worldState?.geometry.front_min_mm || 0;
 
   return (
-    <div className="bp-frame flex-1 flex flex-col min-h-0">
+    <div className={`bp-frame flex flex-col ${compact ? 'flex-shrink-0' : 'flex-1 min-h-0'}`}>
       <span className="bp-label">TELEMETRY</span>
       <div className="bp-frame-inner flex flex-col h-full">
         {/* Primary stats */}
-        <div className="p-3 border-b border-[var(--bp-line-dim)]">
+        <div className={`border-b border-[var(--bp-line-dim)] ${compact ? 'p-2' : 'p-3'}`}>
           {/* State + Safety row */}
           <div className="flex gap-4 mb-3">
             <div className="flex-1">
@@ -80,7 +82,7 @@ export function Telemetry({
         </div>
 
         {/* Secondary stats grid */}
-        <div className="grid grid-cols-4 gap-2 p-3 border-b border-[var(--bp-line-dim)] text-center">
+        <div className={`grid grid-cols-4 gap-2 border-b border-[var(--bp-line-dim)] text-center ${compact ? 'p-2' : 'p-3'}`}>
           <MiniStat label="STUCK" value={worldState?.stuck_counter || 0} />
           <MiniStat label="QUEUE" value={worldState?.health.queue_depth || 0} />
           <MiniStat
@@ -93,17 +95,17 @@ export function Telemetry({
           />
         </div>
 
-        {/* Detections list */}
-        <div className="flex-1 min-h-0 flex flex-col">
-          <div className="px-3 py-2 border-b border-[var(--bp-line-dim)] flex items-center justify-between">
+        {/* Detections list - compact when copilot active */}
+        <div className={`flex flex-col ${compact ? 'max-h-32' : 'flex-1 min-h-0'}`}>
+          <div className="px-2 py-1.5 border-b border-[var(--bp-line-dim)] flex items-center justify-between flex-shrink-0">
             <span className="bp-readout-label">DETECTED OBJECTS</span>
             {detections.length > 0 && (
               <span className="bp-tag success">{detections.length}</span>
             )}
           </div>
-          <div className="flex-1 overflow-auto p-2">
+          <div className="flex-1 overflow-auto p-1.5">
             {detections.length === 0 ? (
-              <div className="h-full flex items-center justify-center">
+              <div className="h-full flex items-center justify-center py-2">
                 <span className="font-mono text-xs text-[var(--bp-cream-dim)]">
                   NO OBJECTS
                 </span>

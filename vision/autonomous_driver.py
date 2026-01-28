@@ -295,8 +295,81 @@ class DriverState:
     right_is_obstacle: bool = False
 
 
-# === Camera Capture ===
-# Uses centralized vision service's camera endpoint
+# === Vision Service Integration ===
+# Uses background vision processor for pre-computed depth (fast)
+
+
+@dataclass
+class VisionSnapshot:
+    """Snapshot from vision service with pre-computed depth."""
+    frame: Optional[np.ndarray]
+    depth: DepthZones
+    age_ms: int
+    processing_ms: float
+    detected_objects: list
+
+
+def fetch_vision_latest(vision_service_url: str, max_age_ms: int = 500) -> Optional[VisionSnapshot]:
+    """
+    Fetch pre-computed vision results from background processor.
+
+    Much faster than capture_frame + depth estimation - vision service
+    runs depth at 10fps and caches results.
+
+    Args:
+        vision_service_url: Base URL of vision service
+        max_age_ms: Reject results older than this (stale data)
+
+    Returns:
+        VisionSnapshot with frame, depth zones, and detected objects
+    """
+    try:
+        response = requests.get(f"{vision_service_url}/vision/latest/full", timeout=1.0)
+        if response.status_code != 200:
+            return None
+
+        data = response.json()
+        if not data.get("success"):
+            return None
+
+        # Check freshness
+        age_ms = data.get("age_ms", 999999)
+        if age_ms > max_age_ms:
+            print(f"[VISION] Stale data ({age_ms}ms old), skipping")
+            return None
+
+        # Extract depth zones
+        depth_data = data.get("depth", {})
+        zones = depth_data.get("zones", {"left": 0, "center": 0, "right": 0})
+        depth = DepthZones(
+            left=zones["left"] * 100,  # Convert 0-1 to 0-100
+            center=zones["center"] * 100,
+            right=zones["right"] * 100,
+        )
+
+        # Decode frame if present
+        frame = None
+        images = data.get("images", {})
+        if images.get("frame"):
+            try:
+                image_bytes = base64.b64decode(images["frame"])
+                pil_image = Image.open(io.BytesIO(image_bytes))
+                frame = np.array(pil_image)
+            except Exception:
+                pass
+
+        return VisionSnapshot(
+            frame=frame,
+            depth=depth,
+            age_ms=age_ms,
+            processing_ms=data.get("processing_ms", 0),
+            detected_objects=data.get("detection", {}).get("objects", []),
+        )
+
+    except Exception as e:
+        print(f"[VISION] Error fetching from service: {e}")
+        return None
+
 
 def capture_frame(vision_service_url: str) -> Optional[np.ndarray]:
     """Get latest frame from the vision service's camera endpoint."""
@@ -1096,29 +1169,38 @@ def run_driver(duration_s: int, config: Config, dry_run: bool = False):
                         if scan_direction_override:
                             print(f"[SCAN] Best path: {scan_direction_override}")
 
-            # Only capture a new frame if we didn't just do a scan
-            if frame is None:
-                frame = capture_frame(config.vision_service_url)
-                if frame is None:
-                    state.vision_failures += 1
-                    if state.vision_failures > config.max_vision_failures:
-                        print("[DRIVER] Too many vision failures, stopping")
-                        break
-                    time.sleep(config.loop_interval_ms / 1000.0)
-                    continue
+            # Only fetch vision if we didn't just do a scan
+            if frame is None or current_depth is None:
+                # Try fast path: pre-computed depth from vision processor
+                vision_snapshot = fetch_vision_latest(config.vision_service_url)
 
-            state.vision_failures = 0
+                if vision_snapshot:
+                    # Got cached results - instant, no computation!
+                    current_depth = vision_snapshot.depth
+                    frame = vision_snapshot.frame
+                    state.vision_failures = 0
+                else:
+                    # Fallback: capture + compute (slower, for when processor not running)
+                    frame = capture_frame(config.vision_service_url)
+                    if frame is None:
+                        state.vision_failures += 1
+                        if state.vision_failures > config.max_vision_failures:
+                            print("[DRIVER] Too many vision failures, stopping")
+                            break
+                        time.sleep(config.loop_interval_ms / 1000.0)
+                        continue
 
-            # Only process depth if we didn't get it from scan
-            if current_depth is None:
-                pil_frame = Image.fromarray(frame)
-                depth_result = depth_estimator.estimate(pil_frame)
-                zones = depth_result["depth_zones"]
-                current_depth = DepthZones(
-                    left=zones["left"] * 100,
-                    center=zones["center"] * 100,
-                    right=zones["right"] * 100,
-                )
+                    state.vision_failures = 0
+
+                    # Compute depth locally (fallback path)
+                    pil_frame = Image.fromarray(frame)
+                    depth_result = depth_estimator.estimate(pil_frame)
+                    zones = depth_result["depth_zones"]
+                    current_depth = DepthZones(
+                        left=zones["left"] * 100,
+                        center=zones["center"] * 100,
+                        right=zones["right"] * 100,
+                    )
 
             # Smooth
             state.smoothed_depth = smooth_depth(current_depth, state.smoothed_depth, config.ema_alpha)

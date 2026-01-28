@@ -21,6 +21,11 @@ from PIL import Image
 import cv2
 import numpy as np
 
+import threading
+import time as time_module
+from dataclasses import dataclass, field
+from typing import List
+
 from models import DepthEstimator, ObjectDetector
 from robot_client import RobotClient, CameraStream, get_robot, get_camera
 from montage import (
@@ -36,6 +41,189 @@ logger = logging.getLogger(__name__)
 # Global model instances (loaded once at startup)
 depth_estimator: Optional[DepthEstimator] = None
 object_detector: Optional[ObjectDetector] = None
+
+
+# === Background Vision Processor ===
+# Runs depth estimation continuously, caches results for fast access
+
+
+@dataclass
+class VisionResult:
+    """Cached vision processing result."""
+    timestamp_ms: int = 0
+    frame_base64: Optional[str] = None
+    depth_image_base64: Optional[str] = None
+    annotated_image_base64: Optional[str] = None
+    depth_zones: dict = field(default_factory=lambda: {"left": 0, "center": 0, "right": 0})
+    center_depth: float = 0.0
+    detected_objects: List[dict] = field(default_factory=list)
+    processing_ms: float = 0.0
+    frame_width: int = 0
+    frame_height: int = 0
+
+
+class VisionProcessor:
+    """
+    Background thread that continuously processes camera frames.
+
+    Runs depth estimation (and optionally detection) at configurable rate,
+    caching results for instant access by decision loop and UI.
+    """
+
+    def __init__(
+        self,
+        camera: CameraStream,
+        depth_model: DepthEstimator,
+        detection_model: Optional[ObjectDetector] = None,
+        target_fps: float = 10.0,
+        run_detection: bool = False,
+        detection_interval: int = 3,  # Run detection every N frames
+    ):
+        self.camera = camera
+        self.depth_model = depth_model
+        self.detection_model = detection_model
+        self.target_fps = target_fps
+        self.run_detection = run_detection
+        self.detection_interval = detection_interval
+
+        self._thread: Optional[threading.Thread] = None
+        self._running = False
+        self._lock = threading.Lock()
+
+        # Cached result
+        self._latest = VisionResult()
+
+        # Stats
+        self._frame_count = 0
+        self._total_processing_ms = 0.0
+        self._detection_count = 0
+
+    def start(self):
+        """Start background processing thread."""
+        if self._running:
+            return
+
+        self._running = True
+        self._thread = threading.Thread(target=self._process_loop, daemon=True)
+        self._thread.start()
+        logger.info(f"VisionProcessor started at {self.target_fps} fps")
+
+    def stop(self):
+        """Stop background processing."""
+        self._running = False
+        if self._thread:
+            self._thread.join(timeout=2.0)
+            self._thread = None
+        logger.info("VisionProcessor stopped")
+
+    def get_latest(self) -> VisionResult:
+        """Get latest cached vision result (thread-safe, instant)."""
+        with self._lock:
+            return self._latest
+
+    def get_stats(self) -> dict:
+        """Get processing statistics."""
+        avg_ms = self._total_processing_ms / max(self._frame_count, 1)
+        return {
+            "running": self._running,
+            "target_fps": self.target_fps,
+            "frames_processed": self._frame_count,
+            "detections_run": self._detection_count,
+            "avg_processing_ms": round(avg_ms, 1),
+            "detection_enabled": self.run_detection,
+        }
+
+    def set_detection(self, enabled: bool):
+        """Enable/disable detection processing."""
+        self.run_detection = enabled
+        logger.info(f"Detection {'enabled' if enabled else 'disabled'}")
+
+    def _process_loop(self):
+        """Main processing loop - runs in background thread."""
+        target_interval = 1.0 / self.target_fps
+
+        while self._running:
+            loop_start = time_module.time()
+
+            try:
+                self._process_frame()
+            except Exception as e:
+                logger.warning(f"Vision processing error: {e}")
+
+            # Maintain target FPS
+            elapsed = time_module.time() - loop_start
+            sleep_time = target_interval - elapsed
+            if sleep_time > 0:
+                time_module.sleep(sleep_time)
+
+    def _process_frame(self):
+        """Process a single frame."""
+        # Get latest camera frame
+        frame = self.camera.get_frame()
+        if frame is None:
+            return
+
+        start_time = time_module.time()
+        timestamp_ms = int(start_time * 1000)
+
+        # Convert to PIL for models
+        image = Image.fromarray(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB))
+
+        # Always run depth estimation
+        depth_result = self.depth_model.estimate(image, include_image=True)
+
+        # Encode camera frame
+        _, buffer = cv2.imencode('.jpg', frame, [cv2.IMWRITE_JPEG_QUALITY, 80])
+        frame_base64 = base64.b64encode(buffer).decode('utf-8')
+
+        # Build result
+        result = VisionResult(
+            timestamp_ms=timestamp_ms,
+            frame_base64=frame_base64,
+            depth_image_base64=depth_result.get("depth_image"),
+            depth_zones=depth_result.get("depth_zones", {"left": 0, "center": 0, "right": 0}),
+            center_depth=depth_result.get("center_depth", 0),
+            frame_width=frame.shape[1],
+            frame_height=frame.shape[0],
+        )
+
+        # Run detection periodically if enabled
+        if self.run_detection and self.detection_model and self._frame_count % self.detection_interval == 0:
+            try:
+                detection_result = self.detection_model.detect(
+                    image, confidence_threshold=0.35, include_image=True
+                )
+                result.detected_objects = detection_result.get("detected_objects", [])
+                result.annotated_image_base64 = detection_result.get("annotated_image")
+                self._detection_count += 1
+
+                # Add bearing to each object
+                for obj in result.detected_objects:
+                    if "bbox" in obj:
+                        bbox = obj["bbox"]
+                        center_x = (bbox["x1"] + bbox["x2"]) / 2
+                        obj["bearing_deg"] = round((center_x / frame.shape[1] - 0.5) * 60, 1)
+            except Exception as e:
+                logger.warning(f"Detection failed: {e}")
+
+        # Calculate processing time
+        result.processing_ms = (time_module.time() - start_time) * 1000
+
+        # Update cache (thread-safe)
+        with self._lock:
+            self._latest = result
+
+        self._frame_count += 1
+        self._total_processing_ms += result.processing_ms
+
+
+# Global vision processor instance
+vision_processor: Optional[VisionProcessor] = None
+
+
+def get_vision_processor() -> Optional[VisionProcessor]:
+    """Get the global vision processor instance."""
+    return vision_processor
 
 
 def warmup_models(depth: DepthEstimator, detector: ObjectDetector) -> None:
@@ -72,7 +260,7 @@ def warmup_models(depth: DepthEstimator, detector: ObjectDetector) -> None:
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Load models at startup, cleanup at shutdown."""
-    global depth_estimator, object_detector
+    global depth_estimator, object_detector, vision_processor
 
     # Initialize robot client
     robot_host = os.environ.get("ROBOT_HOST", "192.168.4.1")
@@ -111,10 +299,24 @@ async def lifespan(app: FastAPI):
     # Warmup inference to prime JIT compilation
     warmup_models(depth_estimator, object_detector)
 
+    # Start background vision processor (10 fps depth, detection on demand)
+    vision_fps = float(os.environ.get("VISION_FPS", "10"))
+    vision_processor = VisionProcessor(
+        camera=camera,
+        depth_model=depth_estimator,
+        detection_model=object_detector,
+        target_fps=vision_fps,
+        run_detection=False,  # Detection on demand, not continuous
+        detection_interval=3,  # When enabled, run every 3rd frame
+    )
+    vision_processor.start()
+
     yield
 
     # Cleanup
     logger.info("Shutting down...")
+    if vision_processor:
+        vision_processor.stop()
     camera.stop()
     robot.stop()
     robot.disconnect()
@@ -153,9 +355,11 @@ class AnalyzeResponse(BaseModel):
 @app.get("/health")
 async def health_check():
     """Health check endpoint."""
+    processor = get_vision_processor()
     return {
         "status": "ok",
         "models_loaded": depth_estimator is not None and object_detector is not None,
+        "vision_processor_running": processor is not None and processor._running,
     }
 
 
@@ -372,6 +576,135 @@ async def camera_stop():
     camera = get_camera()
     camera.stop()
     return {"success": True}
+
+
+# === Vision Processing Endpoints ===
+# Background processor runs depth estimation continuously at 10fps.
+# These endpoints return cached results instantly (no computation delay).
+
+
+@app.get("/vision/latest")
+async def vision_latest():
+    """
+    Get latest cached vision results (instant, no computation).
+
+    The background processor runs depth estimation at 10fps.
+    This endpoint returns the most recent result.
+
+    Returns:
+        - depth_zones: {left, center, right} percentages (0-100, higher = closer)
+        - center_depth: center zone depth percentage
+        - timestamp_ms: when this frame was processed
+        - age_ms: how old this result is
+        - processing_ms: how long depth estimation took
+        - detected_objects: list of detected objects (if detection enabled)
+    """
+    processor = get_vision_processor()
+    if not processor:
+        raise HTTPException(status_code=503, detail="Vision processor not running")
+
+    result = processor.get_latest()
+    now_ms = int(time_module.time() * 1000)
+
+    return {
+        "success": True,
+        "depth_zones": result.depth_zones,
+        "center_depth": result.center_depth,
+        "timestamp_ms": result.timestamp_ms,
+        "age_ms": now_ms - result.timestamp_ms,
+        "processing_ms": round(result.processing_ms, 1),
+        "detected_objects": result.detected_objects,
+        "frame_size": {"width": result.frame_width, "height": result.frame_height},
+    }
+
+
+@app.get("/vision/latest/frame")
+async def vision_latest_frame():
+    """
+    Get latest camera frame with depth overlay (instant).
+
+    Returns base64 JPEG images:
+        - frame_base64: raw camera frame
+        - depth_image_base64: depth colormap visualization
+        - annotated_image_base64: frame with detection boxes (if detection enabled)
+    """
+    processor = get_vision_processor()
+    if not processor:
+        raise HTTPException(status_code=503, detail="Vision processor not running")
+
+    result = processor.get_latest()
+    now_ms = int(time_module.time() * 1000)
+
+    return {
+        "success": True,
+        "frame_base64": result.frame_base64,
+        "depth_image_base64": result.depth_image_base64,
+        "annotated_image_base64": result.annotated_image_base64,
+        "timestamp_ms": result.timestamp_ms,
+        "age_ms": now_ms - result.timestamp_ms,
+    }
+
+
+@app.get("/vision/latest/full")
+async def vision_latest_full():
+    """
+    Get complete cached vision result (depth + detection + images).
+
+    Combines all vision data in one response for dashboard use.
+    """
+    processor = get_vision_processor()
+    if not processor:
+        raise HTTPException(status_code=503, detail="Vision processor not running")
+
+    result = processor.get_latest()
+    now_ms = int(time_module.time() * 1000)
+
+    return {
+        "success": True,
+        "timestamp_ms": result.timestamp_ms,
+        "age_ms": now_ms - result.timestamp_ms,
+        "processing_ms": round(result.processing_ms, 1),
+        "depth": {
+            "zones": result.depth_zones,
+            "center": result.center_depth,
+        },
+        "detection": {
+            "objects": result.detected_objects,
+            "count": len(result.detected_objects),
+        },
+        "images": {
+            "frame": result.frame_base64,
+            "depth": result.depth_image_base64,
+            "annotated": result.annotated_image_base64,
+        },
+        "frame_size": {"width": result.frame_width, "height": result.frame_height},
+    }
+
+
+@app.get("/vision/stats")
+async def vision_stats():
+    """Get vision processor statistics."""
+    processor = get_vision_processor()
+    if not processor:
+        raise HTTPException(status_code=503, detail="Vision processor not running")
+
+    return processor.get_stats()
+
+
+@app.post("/vision/detection")
+async def vision_detection_toggle(enabled: bool = True):
+    """
+    Enable/disable object detection in background processor.
+
+    Detection is more expensive than depth estimation.
+    Enable when you need semantic understanding (look_for/avoid nudges).
+    """
+    processor = get_vision_processor()
+    if not processor:
+        raise HTTPException(status_code=503, detail="Vision processor not running")
+
+    processor.set_detection(enabled)
+    return {"success": True, "detection_enabled": enabled}
 
 
 # === Claude Copilot Endpoints ===
@@ -693,17 +1026,17 @@ async def dashboard_snapshot():
     """
     Combined snapshot for dashboard polling.
     Returns robot state, camera frame, depth analysis, and object detection.
-    Designed to be polled every 1-2 seconds.
-    """
-    import time
 
+    Now uses cached results from background vision processor (instant, no computation).
+    Can be polled at 10fps for smooth UI updates.
+    """
     robot = get_robot()
-    camera = get_camera()
     store = get_store()
 
-    timestamp_ms = int(time.time() * 1000)
+    timestamp_ms = int(time_module.time() * 1000)
     robot_connected = robot.is_connected()
-    vision_available = depth_estimator is not None and object_detector is not None
+    processor = get_vision_processor()
+    vision_available = processor is not None
 
     result = {
         "timestamp": timestamp_ms,
@@ -714,56 +1047,31 @@ async def dashboard_snapshot():
         "annotated_image": None,
         "depth": None,
         "detection": None,
-        "world_state": _build_world_state(robot, camera, store, timestamp_ms),
+        "world_state": _build_world_state(robot, get_camera(), store, timestamp_ms),
     }
 
-    # Get camera frame
-    frame = camera.get_frame()
-    if frame is not None and vision_available:
-        # Convert to PIL for models
-        image = Image.fromarray(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB))
+    # Get cached vision results (instant - no computation)
+    if processor:
+        vision = processor.get_latest()
 
-        # Encode raw camera image
-        _, buffer = cv2.imencode('.jpg', frame, [cv2.IMWRITE_JPEG_QUALITY, 80])
-        result["camera_image"] = base64.b64encode(buffer).decode('utf-8')
+        result["camera_image"] = vision.frame_base64
+        result["depth_image"] = vision.depth_image_base64
+        result["annotated_image"] = vision.annotated_image_base64
 
-        # Run depth estimation
-        try:
-            depth_result = depth_estimator.estimate(image, include_image=True)
+        if vision.timestamp_ms > 0:
             result["depth"] = {
-                "center_depth": depth_result.get("center_depth", 0),
-                "depth_zones": depth_result.get("depth_zones", {"left": 0, "center": 0, "right": 0}),
-                "image_size": {"width": frame.shape[1], "height": frame.shape[0]},
+                "center_depth": vision.center_depth,
+                "depth_zones": vision.depth_zones,
+                "image_size": {"width": vision.frame_width, "height": vision.frame_height},
+                "age_ms": timestamp_ms - vision.timestamp_ms,
+                "processing_ms": vision.processing_ms,
             }
-            if "depth_image" in depth_result:
-                result["depth_image"] = depth_result["depth_image"]
-        except Exception as e:
-            logger.warning(f"Depth estimation failed: {e}")
 
-        # Run object detection
-        try:
-            detection_result = object_detector.detect(image, confidence_threshold=0.35, include_image=True)
-            detected = detection_result.get("detected_objects", [])
-
-            # Add bearing calculation for each object
-            img_width = frame.shape[1]
-            for obj in detected:
-                if "bbox" in obj:
-                    bbox = obj["bbox"]
-                    center_x = (bbox["x1"] + bbox["x2"]) / 2
-                    # -30 to +30 degrees based on position in frame
-                    obj["bearing_deg"] = round((center_x / img_width - 0.5) * 60, 1)
-                else:
-                    obj["bearing_deg"] = 0
-
-            result["detection"] = {
-                "detected_objects": detected,
-                "count": len(detected),
-            }
-            if "annotated_image" in detection_result:
-                result["annotated_image"] = detection_result["annotated_image"]
-        except Exception as e:
-            logger.warning(f"Object detection failed: {e}")
+            if vision.detected_objects:
+                result["detection"] = {
+                    "detected_objects": vision.detected_objects,
+                    "count": len(vision.detected_objects),
+                }
 
     return result
 
@@ -879,6 +1187,15 @@ async def full_status():
     robot = get_robot()
     camera = get_camera()
     store = get_store()
+    processor = get_vision_processor()
+
+    vision_status = {
+        "depth_loaded": depth_estimator is not None,
+        "detection_loaded": object_detector is not None,
+    }
+
+    if processor:
+        vision_status["processor"] = processor.get_stats()
 
     return {
         "robot": {
@@ -886,10 +1203,7 @@ async def full_status():
             "metrics": robot.get_metrics(),
         },
         "camera": camera.get_status(),
-        "vision": {
-            "depth_loaded": depth_estimator is not None,
-            "detection_loaded": object_detector is not None,
-        },
+        "vision": vision_status,
         "store": store.get_stats(),
     }
 

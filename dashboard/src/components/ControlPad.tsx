@@ -10,6 +10,7 @@ interface ControlPadProps {
   copilotActive?: boolean;
   decisions?: Decision[];
   onDecisionsClear?: () => void;
+  className?: string;
 }
 
 export function ControlPad({
@@ -19,6 +20,7 @@ export function ControlPad({
   copilotActive = false,
   decisions = [],
   onDecisionsClear,
+  className = '',
 }: ControlPadProps) {
   const [activeKey, setActiveKey] = useState<string | null>(null);
   const [isExploring, setIsExploring] = useState(false);
@@ -106,7 +108,7 @@ export function ControlPad({
   };
 
   return (
-    <div className="bp-frame flex flex-col" style={{ minHeight: copilotActive ? '280px' : 'auto' }}>
+    <div className={`bp-frame flex flex-col ${className}`}>
       <span className="bp-label">{copilotActive ? 'COPILOT' : 'CONTROLS'}</span>
       <div className="bp-frame-inner flex flex-col h-full p-3">
         {/* EMERGENCY STOP - Always visible */}
