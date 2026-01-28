@@ -491,6 +491,22 @@ body {
   animation: detection-in 0.3s ease-out;
 }
 
+/* Decision row animation */
+.bp-decision-row {
+  animation: decision-in 0.25s ease-out;
+}
+
+@keyframes decision-in {
+  0% {
+    opacity: 0;
+    transform: translateY(-4px);
+  }
+  100% {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
 @keyframes detection-in {
   0% {
     opacity: 0;

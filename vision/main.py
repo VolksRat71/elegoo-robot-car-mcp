@@ -23,7 +23,10 @@ import numpy as np
 
 from models import DepthEstimator, ObjectDetector
 from robot_client import RobotClient, CameraStream, get_robot, get_camera
-from montage import get_journey_montage, load_nudges, save_nudges, update_nudge
+from montage import (
+    get_journey_montage, load_nudges, save_nudges, update_nudge,
+    load_decision_queue, clear_decision_queue
+)
 from store import get_store
 
 # Configure logging
@@ -468,6 +471,30 @@ async def clear_nudges():
     }
     save_nudges(default_nudges)
     return default_nudges
+
+
+# === Decision Queue Endpoints ===
+# For dashboard visualization of autonomous driver decisions
+
+
+@app.get("/api/decisions")
+async def get_decisions():
+    """
+    Get recent autonomous driver decisions for dashboard visualization.
+    Returns the last 20 decisions with trace information.
+    """
+    nudges = load_nudges()
+    return {
+        "copilot_active": nudges.get("active", False),
+        "decisions": load_decision_queue(),
+    }
+
+
+@app.delete("/api/decisions")
+async def clear_decisions():
+    """Clear the decision queue."""
+    clear_decision_queue()
+    return {"cleared": True}
 
 
 # === State Store Endpoints ===

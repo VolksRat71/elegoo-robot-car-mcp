@@ -27,6 +27,9 @@ from typing import Optional, List
 
 import numpy as np
 
+# Import shared state modules
+from montage import load_nudges, append_decision
+
 # Import centralized robot client (camera is accessed via HTTP, not direct stream)
 from robot_client import RobotClient
 import requests
@@ -1410,6 +1413,27 @@ def run_driver(duration_s: int, config: Config, dry_run: bool = False):
             # Log decision trace if there were overrides
             if 'decision_trace' in dir() and len(decision_trace) > 1:
                 print(f"[TRACE] {' → '.join(decision_trace)} → final:{decision.value}")
+
+            # Write to decision queue for dashboard visualization
+            # Only write interesting decisions (not every forward)
+            if 'decision_trace' in dir():
+                is_interesting = (
+                    len(decision_trace) > 1 or  # Had overrides
+                    decision not in (Decision.FORWARD, Decision.FORWARD_SLOW) or  # Not forward
+                    state.committed_decision is not None  # In commitment
+                )
+                if is_interesting:
+                    append_decision({
+                        "depth": {
+                            "left": round(state.smoothed_depth.left, 1),
+                            "center": round(state.smoothed_depth.center, 1),
+                            "right": round(state.smoothed_depth.right, 1),
+                        },
+                        "trace": decision_trace,
+                        "final": decision.value,
+                        "committed": state.committed_decision.value if state.committed_decision else None,
+                        "corner_level": state.corner_escape_level,
+                    })
 
             # Execute every loop - motor commands need to be refreshed
             if dry_run:

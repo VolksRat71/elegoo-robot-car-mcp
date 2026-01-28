@@ -129,6 +129,56 @@ def update_nudge(key: str, value):
     return nudges
 
 
+# === Decision Queue ===
+# Ring buffer of recent decisions for dashboard visualization
+
+DECISION_QUEUE_PATH = Path(__file__).parent / "decision_queue.json"
+MAX_DECISIONS = 20
+
+
+def load_decision_queue() -> List[dict]:
+    """Load recent decisions from file."""
+    if DECISION_QUEUE_PATH.exists():
+        try:
+            with open(DECISION_QUEUE_PATH) as f:
+                return json.load(f)
+        except (json.JSONDecodeError, IOError):
+            return []
+    return []
+
+
+def save_decision_queue(queue: List[dict]):
+    """Save decision queue to file."""
+    with open(DECISION_QUEUE_PATH, 'w') as f:
+        json.dump(queue[-MAX_DECISIONS:], f)  # Keep only last N
+
+
+def append_decision(decision: dict):
+    """
+    Append a decision to the queue.
+
+    Decision format:
+    {
+        "timestamp_ms": 1234567890,
+        "depth": {"left": 40, "center": 35, "right": 60},
+        "trace": ["base:FORWARD", "nudge:TURN_LEFT"],
+        "final": "TURN_LEFT",
+        "committed": false,
+        "corner_level": 0
+    }
+    """
+    import time
+    queue = load_decision_queue()
+    decision["timestamp_ms"] = int(time.time() * 1000)
+    queue.append(decision)
+    save_decision_queue(queue)
+
+
+def clear_decision_queue():
+    """Clear all decisions from the queue."""
+    save_decision_queue([])
+
+
 if __name__ == "__main__":
     # Test montage generation
     result = get_journey_montage(6)

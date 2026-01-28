@@ -1,13 +1,25 @@
 import { useCallback, useEffect, useState } from 'react';
 import { drive, stop, explore, turn } from '../api';
+import { DecisionQueue } from './DecisionQueue';
+import type { Decision } from '../types';
 
 interface ControlPadProps {
   onCommandStart?: () => void;
   onCommandEnd?: () => void;
   disabled?: boolean;
+  copilotActive?: boolean;
+  decisions?: Decision[];
+  onDecisionsClear?: () => void;
 }
 
-export function ControlPad({ onCommandStart, onCommandEnd, disabled }: ControlPadProps) {
+export function ControlPad({
+  onCommandStart,
+  onCommandEnd,
+  disabled,
+  copilotActive = false,
+  decisions = [],
+  onDecisionsClear,
+}: ControlPadProps) {
   const [activeKey, setActiveKey] = useState<string | null>(null);
   const [isExploring, setIsExploring] = useState(false);
 
@@ -27,7 +39,15 @@ export function ControlPad({ onCommandStart, onCommandEnd, disabled }: ControlPa
 
   const handleKeyDown = useCallback(
     (e: KeyboardEvent) => {
-      if (disabled || e.repeat) return;
+      // Emergency stop always works
+      if (e.key === ' ' || e.key === 'Escape') {
+        e.preventDefault();
+        executeCommand(() => stop());
+        return;
+      }
+
+      // Manual controls only when not in copilot mode
+      if (disabled || copilotActive || e.repeat) return;
 
       const key = e.key.toLowerCase();
       setActiveKey(key);
@@ -49,14 +69,9 @@ export function ControlPad({ onCommandStart, onCommandEnd, disabled }: ControlPa
         case 'arrowright':
           executeCommand(() => turn(30, 40));
           break;
-        case ' ':
-        case 'escape':
-          e.preventDefault();
-          executeCommand(() => stop());
-          break;
       }
     },
-    [disabled, executeCommand]
+    [disabled, copilotActive, executeCommand]
   );
 
   const handleKeyUp = useCallback(() => {
@@ -91,91 +106,94 @@ export function ControlPad({ onCommandStart, onCommandEnd, disabled }: ControlPa
   };
 
   return (
-    <div className="bp-frame">
-      <span className="bp-label">CONTROLS</span>
-      <div className="bp-frame-inner p-4">
-        {/* EMERGENCY STOP - Big and prominent */}
+    <div className="bp-frame flex flex-col" style={{ minHeight: copilotActive ? '280px' : 'auto' }}>
+      <span className="bp-label">{copilotActive ? 'COPILOT' : 'CONTROLS'}</span>
+      <div className="bp-frame-inner flex flex-col h-full p-3">
+        {/* EMERGENCY STOP - Always visible */}
         <button
           onClick={handleStop}
           disabled={disabled}
-          className="bp-btn bp-emergency w-full py-4 mb-4 rounded-sm disabled:opacity-50"
+          className="bp-btn bp-emergency w-full py-3 mb-3 rounded-sm disabled:opacity-50 flex-shrink-0"
         >
           <div className="flex items-center justify-center gap-2">
             <StopIcon />
             <span>EMERGENCY STOP</span>
           </div>
-          <div className="text-[10px] font-normal opacity-70 mt-1">
+          <div className="text-[10px] font-normal opacity-70 mt-0.5">
             SPACE / ESC
           </div>
         </button>
 
-        {/* Direction Pad */}
-        <div className="flex flex-col items-center gap-1 mb-4">
-          {/* Up */}
-          <DirectionButton
-            direction="up"
-            onClick={() => executeCommand(() => drive('forward', 50, 300))}
-            active={activeKey === 'w' || activeKey === 'arrowup'}
-            disabled={disabled}
-            hint="W"
-          />
-
-          {/* Left / Center / Right */}
-          <div className="flex gap-1">
-            <DirectionButton
-              direction="left"
-              onClick={() => executeCommand(() => turn(-30, 40))}
-              active={activeKey === 'a' || activeKey === 'arrowleft'}
-              disabled={disabled}
-              hint="A"
-            />
-            {/* Center indicator */}
-            <div className="w-14 h-14 flex items-center justify-center border-2 border-[var(--bp-line-dim)] bg-[var(--bp-bg)]">
-              <div className="w-3 h-3 rounded-full border-2 border-[var(--bp-line-dim)]" />
+        {/* Conditional content: Manual controls OR Decision queue */}
+        {copilotActive ? (
+          <div className="flex-1 min-h-0 border border-[var(--bp-line-dim)] bg-[var(--bp-bg)]">
+            <DecisionQueue decisions={decisions} onClear={onDecisionsClear} />
+          </div>
+        ) : (
+          <>
+            {/* Direction Pad */}
+            <div className="flex flex-col items-center gap-1 mb-3">
+              <DirectionButton
+                direction="up"
+                onClick={() => executeCommand(() => drive('forward', 50, 300))}
+                active={activeKey === 'w' || activeKey === 'arrowup'}
+                disabled={disabled}
+                hint="W"
+              />
+              <div className="flex gap-1">
+                <DirectionButton
+                  direction="left"
+                  onClick={() => executeCommand(() => turn(-30, 40))}
+                  active={activeKey === 'a' || activeKey === 'arrowleft'}
+                  disabled={disabled}
+                  hint="A"
+                />
+                <div className="w-14 h-14 flex items-center justify-center border-2 border-[var(--bp-line-dim)] bg-[var(--bp-bg)]">
+                  <div className="w-3 h-3 rounded-full border-2 border-[var(--bp-line-dim)]" />
+                </div>
+                <DirectionButton
+                  direction="right"
+                  onClick={() => executeCommand(() => turn(30, 40))}
+                  active={activeKey === 'd' || activeKey === 'arrowright'}
+                  disabled={disabled}
+                  hint="D"
+                />
+              </div>
+              <DirectionButton
+                direction="down"
+                onClick={() => executeCommand(() => drive('backward', 50, 300))}
+                active={activeKey === 's' || activeKey === 'arrowdown'}
+                disabled={disabled}
+                hint="S"
+              />
             </div>
-            <DirectionButton
-              direction="right"
-              onClick={() => executeCommand(() => turn(30, 40))}
-              active={activeKey === 'd' || activeKey === 'arrowright'}
-              disabled={disabled}
-              hint="D"
-            />
-          </div>
 
-          {/* Down */}
-          <DirectionButton
-            direction="down"
-            onClick={() => executeCommand(() => drive('backward', 50, 300))}
-            active={activeKey === 's' || activeKey === 'arrowdown'}
-            disabled={disabled}
-            hint="S"
-          />
-        </div>
+            {/* Explore button */}
+            <button
+              onClick={handleExplore}
+              disabled={disabled || isExploring}
+              className={`bp-btn w-full py-2 text-xs font-mono tracking-wider ${
+                isExploring ? 'active' : ''
+              }`}
+            >
+              {isExploring ? (
+                <span className="flex items-center justify-center gap-2">
+                  <div className="bp-spinner" style={{ width: 14, height: 14, borderWidth: 1 }} />
+                  EXPLORING...
+                </span>
+              ) : (
+                'AUTO EXPLORE'
+              )}
+            </button>
 
-        {/* Explore button */}
-        <button
-          onClick={handleExplore}
-          disabled={disabled || isExploring}
-          className={`bp-btn w-full py-2 text-xs font-mono tracking-wider ${
-            isExploring ? 'active' : ''
-          }`}
-        >
-          {isExploring ? (
-            <span className="flex items-center justify-center gap-2">
-              <div className="bp-spinner" style={{ width: 14, height: 14, borderWidth: 1 }} />
-              EXPLORING...
-            </span>
-          ) : (
-            'AUTO EXPLORE'
-          )}
-        </button>
-
-        {/* Keyboard hint */}
-        <div className="mt-3 pt-3 border-t border-[var(--bp-line-dim)]">
-          <div className="font-mono text-[9px] text-[var(--bp-cream-dim)] text-center">
-            WASD / ARROWS to move
-          </div>
-        </div>
+            {/* Keyboard hint */}
+            <div className="mt-3 pt-3 border-t border-[var(--bp-line-dim)]">
+              <div className="font-mono text-[9px] text-[var(--bp-cream-dim)] text-center">
+                WASD / ARROWS to move
+              </div>
+            </div>
+          </>
+        )}
       </div>
     </div>
   );

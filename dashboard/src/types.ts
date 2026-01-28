@@ -82,3 +82,21 @@ export interface CommandResult {
   message?: string;
   error?: string;
 }
+
+export interface Decision {
+  timestamp_ms: number;
+  depth: {
+    left: number;
+    center: number;
+    right: number;
+  };
+  trace: string[];        // e.g. ["base:TURN_LEFT", "circle:RIGHT"]
+  final: string;          // Final decision before commit
+  committed: string;      // What actually executed
+  corner_level: number;
+}
+
+export interface DecisionsResponse {
+  copilot_active: boolean;
+  decisions: Decision[];
+}

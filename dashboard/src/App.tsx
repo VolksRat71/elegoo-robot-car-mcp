@@ -2,8 +2,8 @@ import { useEffect, useState, useCallback } from 'react';
 import { CameraFeed } from './components/CameraFeed';
 import { ControlPad } from './components/ControlPad';
 import { Telemetry } from './components/Telemetry';
-import { fetchSnapshot } from './api';
-import type { Snapshot } from './types';
+import { fetchSnapshot, fetchDecisions } from './api';
+import type { Snapshot, Decision } from './types';
 
 const POLL_INTERVAL = 1500;
 
@@ -14,14 +14,28 @@ function App() {
   const [lastUpdate, setLastUpdate] = useState<number | null>(null);
   const [isPaused, setIsPaused] = useState(false);
 
-  const loadSnapshot = useCallback(async () => {
+  // Copilot / decisions state
+  const [copilotActive, setCopilotActive] = useState(false);
+  const [decisions, setDecisions] = useState<Decision[]>([]);
+
+  const loadData = useCallback(async () => {
     if (isPaused) return;
 
     try {
-      const data = await fetchSnapshot();
-      setSnapshot(data);
+      // Fetch snapshot and decisions in parallel
+      const [snapshotData, decisionsData] = await Promise.all([
+        fetchSnapshot(),
+        fetchDecisions().catch(() => null), // Don't fail if decisions endpoint unavailable
+      ]);
+
+      setSnapshot(snapshotData);
       setLastUpdate(Date.now());
       setError(null);
+
+      if (decisionsData) {
+        setCopilotActive(decisionsData.copilot_active);
+        setDecisions(decisionsData.decisions);
+      }
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Connection failed');
     } finally {
@@ -30,17 +44,22 @@ function App() {
   }, [isPaused]);
 
   useEffect(() => {
-    loadSnapshot();
-    const interval = setInterval(loadSnapshot, POLL_INTERVAL);
+    loadData();
+    const interval = setInterval(loadData, POLL_INTERVAL);
     return () => clearInterval(interval);
-  }, [loadSnapshot]);
+  }, [loadData]);
 
   const handleCommandStart = () => setIsPaused(true);
   const handleCommandEnd = () => {
     setTimeout(() => {
       setIsPaused(false);
-      loadSnapshot();
+      loadData();
     }, 500);
+  };
+
+  const handleDecisionsClear = () => {
+    setDecisions([]);
+    loadData();
   };
 
   return (
@@ -62,6 +81,12 @@ function App() {
               active={snapshot?.vision_available ?? false}
               warning={!snapshot?.vision_available && !error}
             />
+            {copilotActive && (
+              <StatusIndicator
+                label="COPILOT"
+                active={true}
+              />
+            )}
           </div>
         </div>
 
@@ -101,6 +126,9 @@ function App() {
             onCommandStart={handleCommandStart}
             onCommandEnd={handleCommandEnd}
             disabled={!snapshot?.robot_connected}
+            copilotActive={copilotActive}
+            decisions={decisions}
+            onDecisionsClear={handleDecisionsClear}
           />
           <Telemetry
             worldState={snapshot?.world_state}

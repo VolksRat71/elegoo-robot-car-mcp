@@ -1,4 +1,4 @@
-import type { Snapshot, CommandResult } from './types';
+import type { Snapshot, CommandResult, DecisionsResponse } from './types';
 
 const API_BASE = '/api';
 
@@ -43,4 +43,19 @@ export async function stop(): Promise<CommandResult> {
 
 export async function explore(duration_s = 10): Promise<CommandResult> {
   return sendCommand('explore', { duration_s });
+}
+
+export async function fetchDecisions(): Promise<DecisionsResponse> {
+  const response = await fetch(`${API_BASE}/decisions`);
+  if (!response.ok) {
+    throw new Error(`Failed to fetch decisions: ${response.statusText}`);
+  }
+  return response.json();
+}
+
+export async function clearDecisions(): Promise<void> {
+  const response = await fetch(`${API_BASE}/decisions`, { method: 'DELETE' });
+  if (!response.ok) {
+    throw new Error(`Failed to clear decisions: ${response.statusText}`);
+  }
 }

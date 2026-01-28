@@ -180,6 +180,52 @@ Send control commands to the robot.
 
 ---
 
+---
+
+## GET `/api/decisions`
+
+Polled alongside snapshot. Returns copilot state and decision history.
+
+### Response
+
+```typescript
+{
+  copilot_active: boolean;    // When true, dashboard shows queue instead of manual controls
+  decisions: Decision[];      // Last 20 "interesting" decisions
+}
+```
+
+### Decision
+
+```typescript
+{
+  timestamp_ms: number;       // When decision was made
+  depth: {
+    left: number;             // Depth reading (0-100 scale)
+    center: number;
+    right: number;
+  };
+  trace: string[];            // Decision chain, e.g. ["base:TURN_LEFT", "circle:RIGHT"]
+  final: string;              // Final decision before commit
+  committed: string;          // What actually executed (may differ if overridden)
+  corner_level: number;       // Corner detection level (0 = none)
+}
+```
+
+---
+
+## DELETE `/api/decisions`
+
+Clears the decision queue.
+
+### Response
+
+```
+204 No Content
+```
+
+---
+
 ## Minimal Mock Server
 
 For testing, return this from `/api/snapshot`:
