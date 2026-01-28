@@ -320,6 +320,27 @@ The driver reads this file and biases decisions accordingly.
 
 ---
 
+## Resource Configuration
+
+The vision service supports tuning via environment variables:
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `VISION_THREADS` | `2` | CPU threads for PyTorch |
+| `VISION_FPS` | `30` | Target FPS (drops frames if can't keep up) |
+| `VISION_DEVICE` | `auto` | Force device: `cpu`, `cuda`, `mps`, or `auto` |
+
+### Adaptive Frame Rate
+
+The vision processor targets 30fps but gracefully drops frames if processing can't keep up. Check actual performance:
+
+```bash
+curl http://localhost:8765/vision/stats
+# Returns: actual_fps, frames_dropped, avg_processing_ms
+```
+
+---
+
 ## Usage
 
 ```bash
@@ -331,4 +352,7 @@ python vision/autonomous_driver.py --duration 60 --cautious
 
 # Dry run (no motor commands, just logs decisions)
 python vision/autonomous_driver.py --dry-run
+
+# With resource tuning
+VISION_THREADS=4 VISION_FPS=30 python vision/autonomous_driver.py
 ```
