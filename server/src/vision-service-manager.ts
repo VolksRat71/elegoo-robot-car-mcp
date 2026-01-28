@@ -61,6 +61,13 @@ export class VisionServiceManager {
     console.error(`[VisionManager] Using Python: ${pythonCmd}`);
 
     try {
+      // Resource configuration - passed through from parent env or defaults
+      const visionThreads = process.env.VISION_THREADS || "2";
+      const visionFps = process.env.VISION_FPS || "30";
+      const visionDevice = process.env.VISION_DEVICE || "auto";
+
+      console.error(`[VisionManager] Config: threads=${visionThreads}, fps=${visionFps}, device=${visionDevice}`);
+
       // Spawn Python process
       this.process = spawn(pythonCmd, ["main.py"], {
         cwd: this.visionDir,
@@ -68,6 +75,9 @@ export class VisionServiceManager {
           ...process.env,
           VISION_HOST: VISION_HOST,
           VISION_PORT: String(VISION_PORT),
+          VISION_THREADS: visionThreads,
+          VISION_FPS: visionFps,
+          VISION_DEVICE: visionDevice,
           PYTHONUNBUFFERED: "1", // Ensure output is not buffered
         },
         stdio: ["ignore", "pipe", "pipe"],

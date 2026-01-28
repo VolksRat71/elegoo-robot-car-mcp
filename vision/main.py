@@ -66,8 +66,8 @@ class VisionProcessor:
     """
     Background thread that continuously processes camera frames.
 
-    Runs depth estimation (and optionally detection) at configurable rate,
-    caching results for instant access by decision loop and UI.
+    Adaptive frame rate: targets 30fps but drops frames if processing
+    can't keep up. Runs as fast as hardware allows, gracefully degrades.
     """
 
     def __init__(
@@ -75,9 +75,9 @@ class VisionProcessor:
         camera: CameraStream,
         depth_model: DepthEstimator,
         detection_model: Optional[ObjectDetector] = None,
-        target_fps: float = 10.0,
+        target_fps: float = 30.0,
         run_detection: bool = False,
-        detection_interval: int = 3,  # Run detection every N frames
+        detection_interval: int = 5,  # Run detection every N frames
     ):
         self.camera = camera
         self.depth_model = depth_model
@@ -95,8 +95,13 @@ class VisionProcessor:
 
         # Stats
         self._frame_count = 0
+        self._dropped_frames = 0
         self._total_processing_ms = 0.0
         self._detection_count = 0
+
+        # Adaptive FPS tracking
+        self._fps_window: List[float] = []  # Recent frame times for FPS calc
+        self._fps_window_size = 30
 
     def start(self):
         """Start background processing thread."""
@@ -106,7 +111,7 @@ class VisionProcessor:
         self._running = True
         self._thread = threading.Thread(target=self._process_loop, daemon=True)
         self._thread.start()
-        logger.info(f"VisionProcessor started at {self.target_fps} fps")
+        logger.info(f"VisionProcessor started (target {self.target_fps} fps, adaptive)")
 
     def stop(self):
         """Stop background processing."""
@@ -124,10 +129,13 @@ class VisionProcessor:
     def get_stats(self) -> dict:
         """Get processing statistics."""
         avg_ms = self._total_processing_ms / max(self._frame_count, 1)
+        actual_fps = len(self._fps_window) / max(sum(self._fps_window), 0.001) if self._fps_window else 0
         return {
             "running": self._running,
             "target_fps": self.target_fps,
+            "actual_fps": round(actual_fps, 1),
             "frames_processed": self._frame_count,
+            "frames_dropped": self._dropped_frames,
             "detections_run": self._detection_count,
             "avg_processing_ms": round(avg_ms, 1),
             "detection_enabled": self.run_detection,
@@ -139,8 +147,15 @@ class VisionProcessor:
         logger.info(f"Detection {'enabled' if enabled else 'disabled'}")
 
     def _process_loop(self):
-        """Main processing loop - runs in background thread."""
+        """
+        Adaptive processing loop - targets FPS but drops frames if needed.
+
+        Processes as fast as possible up to target_fps. If processing takes
+        longer than the target interval, skips sleep (drops frames) to
+        maintain real-time behavior.
+        """
         target_interval = 1.0 / self.target_fps
+        last_frame_time = time_module.time()
 
         while self._running:
             loop_start = time_module.time()
@@ -150,11 +165,23 @@ class VisionProcessor:
             except Exception as e:
                 logger.warning(f"Vision processing error: {e}")
 
-            # Maintain target FPS
-            elapsed = time_module.time() - loop_start
+            # Track frame timing for FPS calculation
+            frame_duration = time_module.time() - loop_start
+            self._fps_window.append(frame_duration)
+            if len(self._fps_window) > self._fps_window_size:
+                self._fps_window.pop(0)
+
+            # Adaptive sleep: only sleep if we're ahead of target
+            elapsed = time_module.time() - last_frame_time
             sleep_time = target_interval - elapsed
+
             if sleep_time > 0:
                 time_module.sleep(sleep_time)
+            else:
+                # We're behind - frame was dropped
+                self._dropped_frames += 1
+
+            last_frame_time = time_module.time()
 
     def _process_frame(self):
         """Process a single frame."""
@@ -299,17 +326,17 @@ async def lifespan(app: FastAPI):
     # Warmup inference to prime JIT compilation
     warmup_models(depth_estimator, object_detector)
 
-    # Start background vision processor
-    # Default 5 fps - enough for navigation, easy on CPU
-    # Set VISION_FPS env var to adjust
-    vision_fps = float(os.environ.get("VISION_FPS", "5"))
+    # Start background vision processor with adaptive frame rate
+    # Targets 30fps but drops frames if processing can't keep up
+    # Tune VISION_FPS and VISION_THREADS env vars for your hardware
+    vision_fps = float(os.environ.get("VISION_FPS", "30"))
     vision_processor = VisionProcessor(
         camera=camera,
         depth_model=depth_estimator,
         detection_model=object_detector,
         target_fps=vision_fps,
         run_detection=False,  # Detection on demand, not continuous
-        detection_interval=3,  # When enabled, run every 3rd frame
+        detection_interval=5,  # When enabled, run every 5th frame
     )
     vision_processor.start()
 
