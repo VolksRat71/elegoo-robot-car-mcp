@@ -557,7 +557,9 @@ class CameraStream:
 
         while self.running:
             try:
-                response = requests.get(self.url, timeout=5.0, stream=True)
+                # Use tuple timeout: (connect_timeout, read_timeout)
+                # This ensures we don't hang forever on stalled streams
+                response = requests.get(self.url, timeout=(5.0, 10.0), stream=True)
                 if response.status_code != 200:
                     print(f"[CAMERA] Stream returned {response.status_code}")
                     self.error_count += 1
@@ -566,7 +568,13 @@ class CameraStream:
 
                 # Read MJPEG stream
                 buffer = b""
+                last_chunk_time = time.time()
                 for chunk in response.iter_content(chunk_size=4096):
+                    # Check for stalled stream (no data for 10 seconds)
+                    if time.time() - last_chunk_time > 10.0:
+                        print("[CAMERA] Stream stalled, reconnecting...")
+                        break
+                    last_chunk_time = time.time()
                     if not self.running:
                         break
 

@@ -279,6 +279,13 @@ class DriverState:
     committed_until: float = 0.0  # Timestamp when commitment ends
     committed_decision: Optional[Decision] = None  # What we're committed to
 
+    # Wall escape sequence - reverse then turn
+    wall_escape_turn: Optional[Decision] = None  # Turn to execute after reverse
+
+    # Corner escape escalation - increases reverse/turn intensity on repeated corners
+    corner_escape_level: int = 0  # 0=normal, 1=escalated, 2=max
+    last_corner_time: float = 0.0  # Track when we last hit a corner
+
     # Hysteresis state - tracks which zones are "in obstacle mode"
     left_is_obstacle: bool = False
     center_is_obstacle: bool = False
@@ -526,22 +533,32 @@ class HeadScanScheduler:
 
         return None
 
-    def should_force_opposite(self) -> Optional[str]:
+    def should_force_opposite(self, depth: "DepthZones", config: "Config") -> Optional[str]:
         """
-        If we've been turning same direction 3+ times, FORCE the opposite.
-        This breaks circling patterns even when depth says otherwise.
-        Reduced from 5 to 3 for faster escape.
+        If we've been turning same direction 3+ times, suggest the opposite.
+        But ONLY if that direction is actually clear (below obstacle_threshold).
+        Uses obstacle_threshold not danger_threshold to prevent forcing into blocked areas.
         """
         if len(self.recent_turns) < 3:
             return None
 
         last_3 = self.recent_turns[-3:]
         if all(t == "left" for t in last_3):
-            print("[CIRCLE] 3 consecutive lefts - forcing RIGHT")
-            return "right"
+            # Only suggest right if right is actually clear (not just "not danger")
+            if depth.right < config.obstacle_threshold:
+                print("[CIRCLE] 3 consecutive lefts - suggesting RIGHT")
+                return "right"
+            else:
+                print(f"[CIRCLE] 3 lefts but right={depth.right:.0f}% blocked, continuing left")
+                return None
         if all(t == "right" for t in last_3):
-            print("[CIRCLE] 3 consecutive rights - forcing LEFT")
-            return "left"
+            # Only suggest left if left is actually clear
+            if depth.left < config.obstacle_threshold:
+                print("[CIRCLE] 3 consecutive rights - suggesting LEFT")
+                return "left"
+            else:
+                print(f"[CIRCLE] 3 rights but left={depth.left:.0f}% blocked, continuing right")
+                return None
 
         return None
 
@@ -858,6 +875,20 @@ def is_narrow_passage(depth: DepthZones, state: DriverState, config: Config) -> 
     )
 
 
+def is_corner_pattern(depth: DepthZones, config: Config) -> bool:
+    """
+    Detect corner situations that wall_pattern misses.
+    Corners often have: left blocked, right blocked, center not-clear.
+    Unlike walls, corners have more variance (one side usually closer than other).
+    """
+    left_blocked = depth.left > config.obstacle_threshold
+    right_blocked = depth.right > config.obstacle_threshold
+    center_not_clear = depth.center > config.clear_threshold
+
+    # Both sides blocked AND center not clear = corner trap
+    return left_blocked and right_blocked and center_not_clear
+
+
 def make_decision(depth: DepthZones, state: DriverState, config: Config) -> Decision:
     """
     Make navigation decision based on depth zones with hysteresis.
@@ -1090,70 +1121,146 @@ def run_driver(duration_s: int, config: Config, dry_run: bool = False):
             state.smoothed_depth = smooth_depth(current_depth, state.smoothed_depth, config.ema_alpha)
 
             # === Motion Commitment FSM ===
-            # If we're committed to a motion, honor it unless DANGER
+            # If we're committed to a motion, honor it unless obstacle/danger
+            # Supports multi-phase sequences (e.g., wall escape: REVERSE -> TURN -> FORWARD)
             now = time.time()
             if state.committed_until > now and state.committed_decision:
-                # Still in commitment window
+                # Still in commitment window - check for breaking conditions
                 if state.smoothed_depth.center > config.danger_threshold:
-                    # DANGER overrides commitment
+                    # DANGER overrides any commitment - STOP immediately
                     print("[COMMIT] Breaking commitment - DANGER detected")
                     state.committed_until = 0
                     state.committed_decision = None
+                    state.wall_escape_turn = None  # Clear wall escape sequence
                     decision = Decision.STOP
+                elif (state.committed_decision in (Decision.FORWARD, Decision.FORWARD_SLOW)
+                      and state.smoothed_depth.center > config.obstacle_threshold):
+                    # OBSTACLE during forward commitment - break and make fresh decision
+                    # This prevents pushing into obstacles during forward commitment
+                    print(f"[COMMIT] Breaking forward commitment - obstacle at {state.smoothed_depth.center:.0f}%")
+                    state.committed_until = 0
+                    state.committed_decision = None
+                    # Make fresh decision (will be TURN or STOP based on depth)
+                    decision = make_decision(state.smoothed_depth, state, config)
                 else:
                     # Honor commitment
                     decision = state.committed_decision
             else:
-                # Not committed - make fresh decision
-                state.committed_decision = None
-
-                # Decide based on depth (with hysteresis)
-                decision = make_decision(state.smoothed_depth, state, config)
-
-                # === Wall Handling: Reverse First ===
-                # Walls require backing up to change geometry, then turning
-                if is_wall_pattern(state.smoothed_depth, config) and robot and not dry_run:
-                    print("[WALL] Detected - reversing before turn")
-                    # Reverse to change geometry
-                    robot.drive("backward", config.reverse_speed, config.wall_reverse_ms)
-                    # Now turn (decision already set to TURN_*_LARGE by make_decision)
-                    # After turn, commit to forward motion
+                # Commitment expired - check for pending wall escape turn
+                if state.wall_escape_turn:
+                    # Reverse phase complete, now do the turn
+                    decision = state.wall_escape_turn
+                    print(f"[WALL] Reverse complete, now turning: {decision.value}")
+                    state.wall_escape_turn = None
+                    # Commit to forward motion after the turn
                     state.committed_decision = Decision.FORWARD
                     state.committed_until = now + (config.forward_commitment_ms / 1000.0)
                     print(f"[COMMIT] Will drive forward for {config.forward_commitment_ms}ms after turn")
+                else:
+                    # Not committed - make fresh decision
+                    state.committed_decision = None
 
-                # After any turn, commit to forward motion to prevent oscillation
-                elif decision in (Decision.TURN_LEFT, Decision.TURN_RIGHT,
-                                  Decision.TURN_LEFT_LARGE, Decision.TURN_RIGHT_LARGE):
-                    state.committed_decision = Decision.FORWARD
-                    state.committed_until = now + (config.forward_commitment_ms / 1000.0)
+                    # === Decision Tracing ===
+                    # Track each step for debugging weird decisions
+                    decision_trace = []
+
+                    # Decide based on depth (with hysteresis)
+                    decision = make_decision(state.smoothed_depth, state, config)
+                    decision_trace.append(f"base:{decision.value}")
+
+                    # === Wall Handling: Reverse First (via commitment FSM) ===
+                    # Walls require backing up to change geometry, then turning
+                    # Instead of direct motor calls, use the commitment FSM for sequencing
+                    if is_wall_pattern(state.smoothed_depth, config) and not dry_run:
+                        print("[WALL] Detected - committing to reverse sequence")
+                        # Store the turn to do after reverse
+                        state.wall_escape_turn = decision  # TURN_*_LARGE from make_decision
+                        # Commit to REVERSE for wall_reverse_ms
+                        decision = Decision.REVERSE
+                        state.committed_decision = Decision.REVERSE
+                        state.committed_until = now + (config.wall_reverse_ms / 1000.0)
+                        decision_trace.append("wall:REVERSE")
+
+                    # === Corner Handling: Escalating Escape ===
+                    # Corners are missed by wall_pattern due to variance, so detect separately
+                    # Escalate reverse/turn intensity on repeated corner hits
+                    elif is_corner_pattern(state.smoothed_depth, config) and not dry_run:
+                        # Track escalation - if we hit corner within 5s, escalate
+                        if now - state.last_corner_time < 5.0:
+                            state.corner_escape_level = min(state.corner_escape_level + 1, 2)
+                        else:
+                            state.corner_escape_level = 0  # Reset if it's been a while
+                        state.last_corner_time = now
+
+                        # Escalating reverse duration: 600ms -> 900ms -> 1200ms
+                        reverse_ms = [600, 900, 1200][state.corner_escape_level]
+                        # Use LARGE turns for corners (they need more angle to escape)
+                        turn_decision = Decision.TURN_LEFT_LARGE if decision in (
+                            Decision.TURN_LEFT, Decision.TURN_LEFT_LARGE
+                        ) else Decision.TURN_RIGHT_LARGE
+
+                        print(f"[CORNER] Detected (level {state.corner_escape_level}) - "
+                              f"reverse {reverse_ms}ms then {turn_decision.value}")
+
+                        state.wall_escape_turn = turn_decision
+                        decision = Decision.REVERSE
+                        state.committed_decision = Decision.REVERSE
+                        state.committed_until = now + (reverse_ms / 1000.0)
+                        decision_trace.append(f"corner:REVERSE(L{state.corner_escape_level})")
+
+                    # After any turn, commit to forward motion to prevent oscillation
+                    elif decision in (Decision.TURN_LEFT, Decision.TURN_RIGHT,
+                                      Decision.TURN_LEFT_LARGE, Decision.TURN_RIGHT_LARGE):
+                        state.committed_decision = Decision.FORWARD
+                        state.committed_until = now + (config.forward_commitment_ms / 1000.0)
 
             # Apply Claude's nudges (copilot mode)
             nudges = load_nudges()
+            pre_nudge = decision
             decision = apply_nudge_bias(decision, state.smoothed_depth, nudges)
+            if decision != pre_nudge and 'decision_trace' in dir():
+                decision_trace.append(f"nudge:{decision.value}")
 
             # Override with scan result if scan found a better path
             if scan_direction_override:
                 if scan_direction_override == "left":
                     decision = Decision.TURN_LEFT
+                    if 'decision_trace' in dir():
+                        decision_trace.append("scan:LEFT")
                 else:
                     decision = Decision.TURN_RIGHT
+                    if 'decision_trace' in dir():
+                        decision_trace.append("scan:RIGHT")
 
-            # Track turns for circle detection
+            # Circle detection: BIAS (not override) toward opposite direction
+            # NOTE: record_turn() is now called AFTER all overrides (see below)
+            # Only apply when both directions are safe and similar - don't override
+            # legitimate obstacle avoidance when one side is clearly blocked
             if head_scanner and not dry_run:
-                if decision in (Decision.TURN_LEFT, Decision.TURN_LEFT_LARGE):
-                    head_scanner.record_turn("left")
-                elif decision in (Decision.TURN_RIGHT, Decision.TURN_RIGHT_LARGE):
-                    head_scanner.record_turn("right")
+                suggest_dir = head_scanner.should_force_opposite(state.smoothed_depth, config)
+                if suggest_dir and decision in (Decision.TURN_LEFT, Decision.TURN_RIGHT,
+                                                Decision.TURN_LEFT_LARGE, Decision.TURN_RIGHT_LARGE):
+                    # Only apply as tie-breaker when both sides are safe
+                    left_safe = state.smoothed_depth.left < config.obstacle_threshold
+                    right_safe = state.smoothed_depth.right < config.obstacle_threshold
+                    # And they're similar (within 15% - ambiguous territory)
+                    sides_similar = abs(state.smoothed_depth.left - state.smoothed_depth.right) < 15
 
-                # FORCE opposite direction if circling too much
-                # This overrides depth-based decisions to break patterns
-                force_dir = head_scanner.should_force_opposite()
-                if force_dir and decision not in (Decision.STOP, Decision.REVERSE):
-                    if force_dir == "left" and state.smoothed_depth.left < config.danger_threshold:
-                        decision = Decision.TURN_LEFT_LARGE
-                    elif force_dir == "right" and state.smoothed_depth.right < config.danger_threshold:
-                        decision = Decision.TURN_RIGHT_LARGE
+                    if left_safe and right_safe and sides_similar:
+                        if suggest_dir == "left" and decision in (Decision.TURN_RIGHT, Decision.TURN_RIGHT_LARGE):
+                            print(f"[CIRCLE] Bias: switching from right to left (tie-breaker)")
+                            decision = Decision.TURN_LEFT
+                            if 'decision_trace' in dir():
+                                decision_trace.append("circle:LEFT")
+                        elif suggest_dir == "right" and decision in (Decision.TURN_LEFT, Decision.TURN_LEFT_LARGE):
+                            print(f"[CIRCLE] Bias: switching from left to right (tie-breaker)")
+                            decision = Decision.TURN_RIGHT
+                            if 'decision_trace' in dir():
+                                decision_trace.append("circle:RIGHT")
+                    else:
+                        # Log why we didn't apply circle-breaking
+                        if suggest_dir and not (left_safe and right_safe):
+                            print(f"[CIRCLE] Ignoring (one side blocked): L={state.smoothed_depth.left:.0f}% R={state.smoothed_depth.right:.0f}%")
 
             # === Visit Tracking (Loop Prevention) ===
             # Always bias toward unexplored areas when making turn decisions
@@ -1167,10 +1274,14 @@ def run_driver(duration_s: int, config: Config, dry_run: bool = False):
                     if state.smoothed_depth.right < config.obstacle_threshold:
                         print(f"[EXPLORE] Right less explored ({right_score} vs {left_score}), switching")
                         decision = Decision.TURN_RIGHT
+                        if 'decision_trace' in dir():
+                            decision_trace.append("visit:RIGHT")
                 elif decision == Decision.TURN_RIGHT and left_score < right_score - 2:
                     if state.smoothed_depth.left < config.obstacle_threshold:
                         print(f"[EXPLORE] Left less explored ({left_score} vs {right_score}), switching")
                         decision = Decision.TURN_LEFT
+                        if 'decision_trace' in dir():
+                            decision_trace.append("visit:LEFT")
 
             # Force exploration when stuck in same cell too long
             if visit_tracker.is_stuck_in_area(threshold=5):
@@ -1179,8 +1290,12 @@ def run_driver(duration_s: int, config: Config, dry_run: bool = False):
                     print(f"[EXPLORE] Stuck ({visit_tracker.get_visit_count()} visits), forcing {explore_dir}")
                     if explore_dir == "left":
                         decision = Decision.TURN_LEFT_LARGE
+                        if 'decision_trace' in dir():
+                            decision_trace.append("stuck:LEFT_L")
                     else:
                         decision = Decision.TURN_RIGHT_LARGE
+                        if 'decision_trace' in dir():
+                            decision_trace.append("stuck:RIGHT_L")
 
             # Check if we should do head swing to find better path (reactive - stuck/wall)
             do_head_swing = False
@@ -1209,10 +1324,16 @@ def run_driver(duration_s: int, config: Config, dry_run: bool = False):
                         # Turn toward clearest direction
                         if best_angle < 90:  # Left is clearer
                             decision = Decision.TURN_LEFT_LARGE
+                            if 'decision_trace' in dir():
+                                decision_trace.append("swing:LEFT_L")
                         elif best_angle > 90:  # Right is clearer
                             decision = Decision.TURN_RIGHT_LARGE
+                            if 'decision_trace' in dir():
+                                decision_trace.append("swing:RIGHT_L")
                         else:  # Center is clearest, reverse a bit then go
                             decision = Decision.REVERSE
+                            if 'decision_trace' in dir():
+                                decision_trace.append("swing:REVERSE")
             else:
                 # Handle consecutive stops in dry-run mode
                 if decision == Decision.STOP:
@@ -1258,12 +1379,16 @@ def run_driver(duration_s: int, config: Config, dry_run: bool = False):
                         decision = Decision.TURN_LEFT
                         state.exploration_turns += 1
                         state.consecutive_forwards = 0
+                        if 'decision_trace' in dir():
+                            decision_trace.append("explore:LEFT")
                     elif explore_dir == "right" and state.smoothed_depth.right < config.obstacle_threshold:
                         if state.consecutive_forwards < 15:  # Not forced
                             print(f"[EXPLORE] Curiosity turn right (proactive)")
                         decision = Decision.TURN_RIGHT
                         state.exploration_turns += 1
                         state.consecutive_forwards = 0
+                        if 'decision_trace' in dir():
+                            decision_trace.append("explore:RIGHT")
             else:
                 # Reset consecutive forwards on any turn/stop
                 state.consecutive_forwards = 0
@@ -1273,6 +1398,18 @@ def run_driver(duration_s: int, config: Config, dry_run: bool = False):
                 state.forward_count += 1
             if decision.name.startswith("TURN"):
                 state.turn_count += 1
+
+            # Record turns for circle detection AFTER all overrides
+            # This ensures recent_turns reflects actual executed decisions
+            if head_scanner and not dry_run:
+                if decision in (Decision.TURN_LEFT, Decision.TURN_LEFT_LARGE):
+                    head_scanner.record_turn("left")
+                elif decision in (Decision.TURN_RIGHT, Decision.TURN_RIGHT_LARGE):
+                    head_scanner.record_turn("right")
+
+            # Log decision trace if there were overrides
+            if 'decision_trace' in dir() and len(decision_trace) > 1:
+                print(f"[TRACE] {' → '.join(decision_trace)} → final:{decision.value}")
 
             # Execute every loop - motor commands need to be refreshed
             if dry_run:
