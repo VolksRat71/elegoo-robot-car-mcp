@@ -33,7 +33,12 @@ venv/
 ENV/
 *.egg-info/
 .eggs/
+
+# Running resources
 yolov8n.pt
+drive_snapshots/
+nudges.json
+decision_queue.json
 
 # PlatformIO
 firmware/esp32/.pio/
@@ -44,5 +49,3 @@ firmware/arduino/build/
 # Logs
 *.log
 npm-debug.log*
-drive_snapshots/
-nudges.json
